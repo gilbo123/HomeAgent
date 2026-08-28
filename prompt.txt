@@ -1,0 +1,6 @@
+1. change sqllite -> pymongo - confirmed pymongo is installed with default settings. remove .db file - I don't care for it
+2. css file needs to be indented and hman readable (comments)
+3. remove empty files eg '.zshrc' - WHY ARE THESE HERE EVERY TIME YOU DO STUFF
+4. 'add image' icon/button needs to be bigger
+5. save images for recall in /tmp/ (gets removed on shutdown)
+
