@@ -146,8 +146,11 @@ async function openChat(id){
   modelSel.value = r.chat.model;
   inner.innerHTML = "";
   r.messages.forEach(m => {
-    if (m.role === "user") addMessage("user", m.content, {images: JSON.parse(m.images||"[]")});
-    else addMessage("assistant", m.content, {model:m.model, ms:m.response_ms});
+    if (m.role === "user") {
+      // New server returns images as a JSON array; older payloads as a string.
+      const imgs = Array.isArray(m.images) ? m.images : (m.images ? JSON.parse(m.images) : []);
+      addMessage("user", m.content, {images: imgs});
+    } else addMessage("assistant", m.content, {model:m.model, ms:m.response_ms});
   });
   if (!r.messages.length) emptyState();
   $("chatTitle").textContent = r.chat.title;

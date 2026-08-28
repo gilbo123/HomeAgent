@@ -77,7 +77,7 @@ def make_handler(app: App):
             except ValueError:
                 return {}
 
-        def _serve_file(self, path: str, content_type: str) -> None:
+        def _serve_file(self, path: str, content_type: str, cache: str = "no-cache") -> None:
             if not os.path.isfile(path):
                 self._send_error_json(404, "Not found")
                 return
@@ -86,7 +86,7 @@ def make_handler(app: App):
             self.send_response(200)
             self.send_header("Content-Type", content_type)
             self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "public, max-age=86400")
+            self.send_header("Cache-Control", cache)
             self.end_headers()
             self.wfile.write(data)
 
@@ -128,8 +128,12 @@ def make_handler(app: App):
                 if m:
                     stored = m.group(1)
                     p = app.uploads.path_for(stored)
-                    return self._serve_file(p, app.uploads.content_type_for(stored)) if p \
-                        else self._send_error_json(404, "Not found")
+                    if p:
+                        # Uploaded images are content-addressed, so a long
+                        # client cache is safe and avoids re-fetching on scroll.
+                        return self._serve_file(p, app.uploads.content_type_for(stored),
+                                                cache="public, max-age=86400")
+                    return self._send_error_json(404, "Not found")
             elif method == "POST":
                 if path == "/api/chats":
                     return self._create_chat()
