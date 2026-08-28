@@ -53,13 +53,15 @@
     <footer>
         <div class="comp">
             <div class="prevrow" id="prevRow"></div>
-            <div class="inputrow">
-                <textarea id="input" rows="1"
-                          placeholder="Message Home Agent…  (Enter to send · Shift+Enter for newline)"></textarea>
-                <div class="tools">
-                    <button class="iconbtn" id="attachBtn" title="Attach image">🖼</button>
-                    <input type="file" id="file" accept="image/*" multiple hidden>
-                    <button class="send" id="sendBtn" title="Send">➤</button>
+            <div class="composerrow">
+                <button class="attachbtn" id="attachBtn" title="Attach image">🖼 Attach image</button>
+                <input type="file" id="file" accept="image/*" multiple hidden>
+                <div class="inputrow">
+                    <textarea id="input" rows="1"
+                              placeholder="Message Home Agent…  (Enter to send · Shift+Enter for newline)"></textarea>
+                    <div class="tools">
+                        <button class="send" id="sendBtn" title="Send">➤</button>
+                    </div>
                 </div>
             </div>
             <div class="hint">

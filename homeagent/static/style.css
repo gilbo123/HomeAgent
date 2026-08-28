@@ -456,6 +456,39 @@ footer {
     max-width: 860px;
     margin: 0 auto;
 }
+/* Attach button sits OUTSIDE the input bubble, inline with it (left side),
+   stretched to the bubble's exact height with its label centred. */
+.composerrow {
+    display: flex;
+    align-items: stretch;
+    gap: 8px;
+}
+.composerrow .inputrow {
+    flex: 1;
+    min-width: 0;
+}
+.attachbtn {
+    flex: none;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 6px;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: 13px;
+    background: var(--panel2);
+    color: var(--dim);
+    font: inherit;
+    font-size: 14px;
+    white-space: nowrap;
+    cursor: pointer;
+    transition: border-color .15s, color .15s, background .15s;
+}
+.attachbtn:hover {
+    border-color: var(--accent);
+    color: var(--accent2);
+    background: var(--panel);
+}
 .prevrow {
     display: none;
     gap: 8px;
@@ -539,23 +572,6 @@ textarea::placeholder {
 .iconbtn:hover {
     background: var(--line);
     color: var(--text);
-}
-
-/* Attach-image button — intentionally larger than a generic icon button
-   so the primary "add image" action stands out in the composer. */
-#attachBtn {
-    width: 46px;
-    height: 46px;
-    border-radius: 11px;
-    font-size: 23px;
-    color: var(--text);
-    background: var(--panel);
-    border: 1px solid var(--line);
-}
-#attachBtn:hover {
-    background: var(--panel2);
-    border-color: var(--accent);
-    color: var(--accent2);
 }
 
 .send {
