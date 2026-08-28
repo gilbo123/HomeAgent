@@ -208,8 +208,14 @@ def make_handler(app: App):
             images = payload.get("images") or []
             if not isinstance(images, list):
                 images = []
-            # Only accept names we actually know about (prevents injection).
-            images = [i for i in images if app.uploads.path_for(str(i))]
+            # The client may send either a "/uploads/<name>" URL or a bare
+            # stored name; normalise to the name, then only keep files that
+            # actually exist (prevents path traversal / unknown refs).
+            def _name(v: Any) -> str:
+                v = str(v).strip()
+                return v.removeprefix("/uploads/") if v.startswith("/uploads/") else v
+
+            images = [n for v in images if (n := _name(v)) and app.uploads.path_for(n)]
             if not text and not images:
                 return self._send_error_json(400, "Empty message")
 
