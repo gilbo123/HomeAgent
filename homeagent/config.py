@@ -41,6 +41,9 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "upload_dir": "data/uploads",      # directory for uploaded images
         "max_image_mb": 20,                # per-upload size cap
     },
+    "ui": {
+        "static_dir": "homeagent/static",  # bundled web UI (index.html, css, js)
+    },
 }
 
 
@@ -57,6 +60,8 @@ class Config:
     temperature: float
     history_limit: int
 
+
+    static_dir: str
     db_path: str
     upload_dir: str
     max_image_mb: int
@@ -73,14 +78,17 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
-def _require(section: dict, name: str, converter, expected: type, ctx: str):
+def _require(section: dict, name: str, converter,
+             expected: type | tuple[type, ...], ctx: str):
     """Pull a key out of a section, convert and sanity-check it."""
     if name not in section:
         raise ConfigError(f"missing required key: {ctx}.{name}")
     value = section[name]
     if not isinstance(value, expected):
+        types = expected if isinstance(expected, tuple) else (expected,)
+        want = " or ".join(t.__name__ for t in types)
         raise ConfigError(
-            f"{ctx}.{name} must be a {expected.__name__}, got {type(value).__name__}"
+            f"{ctx}.{name} must be a {want}, got {type(value).__name__}"
         )
     return converter(value)
 
@@ -131,6 +139,8 @@ def load_config(path: str) -> Config:
     max_image_mb = _require(cfg["storage"], "max_image_mb", int, int, "storage")
     if max_image_mb < 1:
         raise ConfigError(f"storage.max_image_mb must be >= 1, got {max_image_mb}")
+    static_dir = _require(cfg["ui"], "static_dir", str, str, "ui")
+
 
     return Config(
         host=host,
@@ -141,6 +151,7 @@ def load_config(path: str) -> Config:
         temperature=float(temperature),
         history_limit=history_limit,
         db_path=_resolve(db_path, base_dir),
+        static_dir=_resolve(static_dir, base_dir),
         upload_dir=_resolve(upload_dir, base_dir),
         max_image_mb=max_image_mb,
     )

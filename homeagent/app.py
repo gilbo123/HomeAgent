@@ -1,9 +1,5 @@
+import os
 from pathlib import Path
-
-from .config import Config
-from .db import ChatDatabase
-from .ollama import OllamaClient
-from .uploads import UploadStore
 
 
 class App:
@@ -13,7 +9,7 @@ class App:
     HTTP handler never reaches into module-level state.
     """
 
-    def __init__(self, cfg, db, ollama, uploads, static_dir: Path):
+    def __init__(self, cfg, db, ollama, uploads, static_dir: str | Path):
         self.cfg = cfg
         self.db = db
         self.ollama = ollama
@@ -27,6 +23,6 @@ class App:
 
     # -- convenience lookups used by the handler ------------------------
     @property
-    def index_html(self) -> Path:
+    def index_html(self) -> str:
         """Path to the bundled single-page UI."""
-        return self.static_dir / "index.html"
+        return os.path.join(os.fspath(self.static_dir), "index.html")
