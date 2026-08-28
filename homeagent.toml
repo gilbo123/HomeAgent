@@ -1,0 +1,23 @@
+# ============================================================================
+# HomeAgent configuration — the single source of truth.
+# No environment variables are read anywhere. Everything lives here.
+#
+# Relative paths are resolved against this file's directory.
+# Missing keys fall back to safe defaults (see homeagent/config.py).
+# ============================================================================
+
+[server]
+host = "127.0.0.1"     # bind address
+port = 8321            # listen port
+open_browser = false   # auto-open the UI on start
+
+[ollama]
+host = "http://192.168.1.200:11434"  # Ollama endpoint (http(s)://host:port)
+model = "qwen3.8:27b"   # default model for new chats (any pulled model can be picked in the UI)
+temperature = 0.7       # sampling temperature
+history_limit = 60      # max messages of context sent to the model per turn
+
+[storage]
+db_path = "homeagent.db"          # SQLite database file (relative → this file's dir)
+upload_dir = "uploads"            # directory for uploaded images (relative → this file's dir)
+max_image_mb = 20                 # per-image upload size limit (MB)
