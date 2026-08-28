@@ -140,8 +140,7 @@ celerybeat.pid
 mnesia/
 rabbitmq/
 # HomeAgent runtime artifacts
-/homeagent.db
-/uploads/
+# (chat history now lives in MongoDB; uploads default to /tmp/homeagent/uploads/)
 __pycache__/
 *.pyc
 

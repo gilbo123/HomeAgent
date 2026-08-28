@@ -37,9 +37,10 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "history_limit": 100,              # max messages sent back as context
     },
     "storage": {
-        "db_path": "homeagent.db",         # SQLite database file
-        "upload_dir": "data/uploads",      # directory for uploaded images
-        "max_image_mb": 20,                # per-upload size cap
+        "mongo_uri": "mongodb://127.0.0.1:27017/",  # MongoDB connection string
+        "mongo_db": "homeagent",                  # database name for chats/messages
+        "upload_dir": "/tmp/homeagent/uploads",   # directory for uploaded images (ephemeral)
+        "max_image_mb": 20,                       # per-upload size cap
     },
     "ui": {
         "static_dir": "homeagent/static",  # bundled web UI (index.html, css, js)
@@ -62,7 +63,8 @@ class Config:
 
 
     static_dir: str
-    db_path: str
+    mongo_uri: str
+    mongo_db: str
     upload_dir: str
     max_image_mb: int
 
@@ -134,7 +136,12 @@ def load_config(path: str) -> Config:
     if history_limit < 2:
         raise ConfigError(f"ollama.history_limit must be >= 2, got {history_limit}")
 
-    db_path = _require(cfg["storage"], "db_path", str, str, "storage")
+    mongo_uri = _require(cfg["storage"], "mongo_uri", str, str, "storage")
+    if not mongo_uri.strip():
+        raise ConfigError("storage.mongo_uri must not be empty")
+    mongo_db = _require(cfg["storage"], "mongo_db", str, str, "storage")
+    if not mongo_db.strip():
+        raise ConfigError("storage.mongo_db must not be empty")
     upload_dir = _require(cfg["storage"], "upload_dir", str, str, "storage")
     max_image_mb = _require(cfg["storage"], "max_image_mb", int, int, "storage")
     if max_image_mb < 1:
@@ -150,7 +157,8 @@ def load_config(path: str) -> Config:
         default_model=model.strip(),
         temperature=float(temperature),
         history_limit=history_limit,
-        db_path=_resolve(db_path, base_dir),
+        mongo_uri=mongo_uri.strip().rstrip("/") + "/",
+        mongo_db=mongo_db.strip(),
         static_dir=_resolve(static_dir, base_dir),
         upload_dir=_resolve(upload_dir, base_dir),
         max_image_mb=max_image_mb,

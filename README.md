@@ -5,7 +5,7 @@ your own machine. Talk to `qwen3.8:27b` (or any model you've pulled) through a
 professional single-page interface — no cloud, no accounts, zero pip installs.
 
 ![stack](https://img.shields.io/badge/python-stdlib%20only-5b8cff)
-![db](https://img.shields.io/badge/storage-sqlite-7aa2ff)
+![db](https://img.shields.io/badge/storage-mongodb-7aa2ff)
 ![arch](https://img.shields.io/badge/architecture-modular%20%2B%20DI-9b59ff)
 
 ## Features
@@ -14,10 +14,10 @@ professional single-page interface — no cloud, no accounts, zero pip installs.
   panel scrolls.
 - **Streaming responses** with a live **response timer** (seconds + ms shown per
   message), and a **stop** button mid-generation.
-- **Chat history in SQLite** (`homeagent.db`) — chats persist across restarts,
-  sidebar lists every conversation with delete.
+- **Chat history in MongoDB** — chats persist across restarts, sidebar lists
+  every conversation with delete.
 - **Image input** — attach or drag-and-drop images; sent to vision-capable
-  models (e.g. `qwen3.8` with vision). Stored under `uploads/`.
+  models (e.g. `qwen3.8` with vision). Stored under `/tmp/homeagent/uploads/`.
 - **Any Ollama model** — model picker lists every model `ollama` has pulled;
   `qwen3.8:27b` is the default (configurable).
 - **Code rendering** — fenced ``` blocks become syntax-styled panels with a
@@ -33,7 +33,8 @@ professional single-page interface — no cloud, no accounts, zero pip installs.
 
 ## Requirements
 
-- Python 3.11+ (standard library only — **nothing to install**)
+- Python 3.11+ (uses `pymongo` — preinstalled in the `chat` virtualenv)
+- MongoDB running locally (e.g. `mongod`)
 - Ollama running locally with at least one model pulled,
   e.g. `ollama pull qwen3.8:27b`
 
@@ -64,9 +65,10 @@ temperature = 0.7           # sampling temperature
 history_limit = 60          # max context messages sent to the model per turn
 
 [storage]
-db_path = "homeagent.db"    # SQLite database file (relative → config dir)
-upload_dir = "uploads"      # directory for uploaded images
-max_image_mb = 20           # per-image upload size limit (MB)
+mongo_uri  = "mongodb://127.0.0.1:27017/"  # MongoDB connection string
+mongo_db   = "homeagent"                   # database name
+upload_dir = "/tmp/homeagent/uploads"      # directory for uploaded images
+max_image_mb = 20                          # per-image upload size limit (MB)
 ```
 
 Use a different file with `./run.sh --config /path/to/other.toml`.
@@ -78,7 +80,7 @@ homeagent/
 ├── __init__.py    # version + package docstring
 ├── app.py         # App facade — the DI object handed to every request
 ├── config.py      # frozen Config dataclass + TOML loader + validation
-├── db.py          # ChatDatabase (SQLite: chats + messages, cascade, history)
+├── db.py          # ChatDatabase (MongoDB: chats + messages, cascade, history)
 ├── ollama.py      # OllamaClient (list models, NDJSON chat streaming)
 ├── server.py      # HTTP handler factory (routes, JSON, NDJSON stream, uploads)
 ├── uploads.py     # UploadStore (multipart parse, MIME allow-list, storage)
@@ -97,8 +99,8 @@ factory. No module-level globals, no hidden coupling.
 | `homeagent/`          | The application package (see above)        |
 | `homeagent.toml`      | All runtime configuration (the only knob)  |
 | `run.sh`              | Launcher with Ollama health check          |
-| `homeagent.db`        | Chat database (created on first run)       |
-| `uploads/`            | Attached images (created on first upload)  |
+| `~/.virtualenvs/chat` | Python env with `pymongo` (auto-detected)  |
+| `/tmp/homeagent/`     | Upload dir + logs (created on first run)   |
 
 ## API (if you want to script it)
 
