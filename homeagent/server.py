@@ -109,6 +109,11 @@ def make_handler(app: App):
             if method == "GET":
                 if path == "/":
                     return self._serve_file(os.fspath(app.index_html), "text/html; charset=utf-8")
+                if path in ("/style.css", "/app.js"):
+                    ctype = ("text/css; charset=utf-8" if path.endswith(".css")
+                             else "application/javascript; charset=utf-8")
+                    p = os.path.join(os.fspath(app.static_dir), path.lstrip("/"))
+                    return self._serve_file(p, ctype)
                 if path == "/api/models":
                     return self._get_models()
                 if path == "/api/chats":

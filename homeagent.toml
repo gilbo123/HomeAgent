@@ -21,3 +21,6 @@ history_limit = 60      # max messages of context sent to the model per turn
 db_path = "homeagent.db"          # SQLite database file (relative → this file's dir)
 upload_dir = "uploads"            # directory for uploaded images (relative → this file's dir)
 max_image_mb = 20                 # per-image upload size limit (MB)
+
+[ui]
+static_dir = "homeagent/static"   # bundled web UI (index.html, style.css, app.js)

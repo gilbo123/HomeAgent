@@ -20,14 +20,8 @@ import logging
 import sys
 import webbrowser
 from http.server import ThreadingHTTPServer
-from pathlib import Path
-
 from . import __version__
 from .app import App
-
-# The bundled UI ships inside the package; data (db/uploads) lives in the
-# project root, next to homeagent.toml.
-_STATIC_DIR = Path(__file__).resolve().parent
 from .config import Config, ConfigError, load_config
 from .db import ChatDatabase
 from .ollama import OllamaClient
@@ -62,7 +56,7 @@ def build_app(config: Config) -> App:
         db=db,
         ollama=ollama,
         uploads=uploads,
-        static_dir=_STATIC_DIR,
+        static_dir=config.static_dir,
     )
 
 
@@ -83,8 +77,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="homeagent", description=__doc__)
     parser.add_argument(
         "-c", "--config",
-        default=str(Path(__file__).resolve().parent.parent / "homeagent.toml"),
-        help="Path to the TOML config file (default: homeagent.toml next to the package)",
+        default="homeagent.toml",
+        help="Path to the TOML config file (default: ./homeagent.toml)",
     )
     args = parser.parse_args(argv)
 
