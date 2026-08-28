@@ -139,6 +139,12 @@ celerybeat.pid
 # RabbitMQ
 mnesia/
 rabbitmq/
+# HomeAgent runtime artifacts
+/homeagent.db
+/uploads/
+__pycache__/
+*.pyc
+
 rabbitmq-data/
 
 # ActiveMQ
