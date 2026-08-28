@@ -2,7 +2,7 @@
 
 Package layout:
     config.py   configuration loading (homeagent.toml, no env vars)
-    db.py       SQLite chat/message persistence (ChatDatabase)
+    db.py       MongoDB (pymongo) chat/message persistence (ChatDatabase)
     ollama.py   Ollama HTTP client (OllamaClient)
     uploads.py  image upload store (UploadStore)
     server.py   HTTP app + routing (App)

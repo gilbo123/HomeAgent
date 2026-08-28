@@ -18,9 +18,10 @@ temperature = 0.7       # sampling temperature
 history_limit = 60      # max messages of context sent to the model per turn
 
 [storage]
-db_path = "homeagent.db"          # SQLite database file (relative → this file's dir)
-upload_dir = "uploads"            # directory for uploaded images (relative → this file's dir)
-max_image_mb = 20                 # per-image upload size limit (MB)
+mongo_uri  = "mongodb://127.0.0.1:27017/"  # MongoDB connection string
+mongo_db   = "homeagent"                   # database name for chats/messages
+upload_dir = "/tmp/homeagent/uploads"      # uploaded images (ephemeral — wiped on reboot)
+max_image_mb = 20                          # per-image upload size limit (MB)
 
 [ui]
 static_dir = "homeagent/static"   # bundled web UI (index.html, style.css, app.js)

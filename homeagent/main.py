@@ -38,7 +38,8 @@ def build_app(config: Config) -> App:
     against a temporary config without importing :mod:`main`.
     """
     db = ChatDatabase(
-        db_path=config.db_path,
+        mongo_uri=config.mongo_uri,
+        db_name=config.mongo_db,
         history_limit=config.history_limit,
         upload_dir=config.upload_dir,
     )
@@ -64,8 +65,8 @@ def create_server(app: App) -> ThreadingHTTPServer:
     """Bind the request-handler factory to the app and create the server.
 
     ``ThreadingHTTPServer`` handles each request in its own thread;
-    the shared collaborators (sqlite connection guarded by an RLock,
-    file stores, urllib client) are all safe for this usage.
+    the shared collaborators (MongoDB client with its own connection
+    pool, file stores, urllib client) are all safe for this usage.
     """
     return ThreadingHTTPServer(
         (app.cfg.host, app.cfg.port), make_handler(app),
@@ -94,7 +95,12 @@ def main(argv: list[str] | None = None) -> int:
         print(f"error: {e}", file=sys.stderr)
         return 1
 
-    app = build_app(config)
+    try:
+        app = build_app(config)
+    except RuntimeError as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
     server = create_server(app)
 
     url = f"http://{config.host}:{config.port}"
@@ -102,7 +108,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"  listening on : {url}")
     print(f"  ollama       : {config.ollama_host}")
     print(f"  model        : {config.default_model}")
-    print(f"  database     : {config.db_path}")
+    print(f"  database     : {config.mongo_uri}{config.mongo_db}")
     print(f"  uploads      : {config.upload_dir}")
     print(f"  press Ctrl+C to stop")
 
