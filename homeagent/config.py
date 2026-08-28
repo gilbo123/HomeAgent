@@ -26,7 +26,7 @@ class ConfigError(ValueError):
 # --------------------------------------------------------------------------
 DEFAULTS: dict[str, dict[str, Any]] = {
     "server": {
-        "host": "127.0.0.1",        # interface to bind
+        "host": "192.168..1.200",        # interface to bind
         "port": 8321,               # TCP port
         "open_browser": True,       # auto-open the UI on startup
     },
