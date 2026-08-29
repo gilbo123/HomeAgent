@@ -103,7 +103,8 @@ def main(argv: list[str] | None = None) -> int:
 
     server = create_server(app)
 
-    url = f"http://{config.host}:{config.port}"
+    browser_host = "127.0.0.1" if config.host in ("0.0.0.0", "::") else config.host
+    url = f"http://{browser_host}:{config.port}"
     print(f"HomeAgent v{__version__}")
     print(f"  listening on : {url}")
     print(f"  ollama       : {config.ollama_host}")

@@ -7,7 +7,7 @@
 # ============================================================================
 
 [server]
-host = "127.0.0.1"     # bind address
+host = "0.0.0.0"       # bind address (0.0.0.0 = reachable from LAN devices)
 port = 8321            # listen port
 open_browser = false   # auto-open the UI on start
 
