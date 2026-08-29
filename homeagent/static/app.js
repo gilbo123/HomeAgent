@@ -4,6 +4,7 @@ const feed = $("feed"), inner = $("inner"), input = $("input"),
       modelSel = $("model"), prevRow = $("prevRow"), fileIn = $("file");
 let chats = [], current = null, modelDefault = "", pendingImages = [],
     busy = false, controller = null;
+let incognito = false, incogContext = [];   // in-memory turns for incognito mode (never saved)
 
 /* ---------------- utils ---------------- */
 const esc = s => s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -92,7 +93,7 @@ function addMessage(role, content, opts={}){
   return node;
 }
 function emptyState(){
-  if (inner.children.length) return;
+  if (inner.children.length || $("empty")) return;
   const d = document.createElement("div");
   d.className = "empty"; d.id = "empty";
   d.innerHTML = `<div class="big">🏠</div>
@@ -126,21 +127,63 @@ async function deleteChat(id){
   await fetch("/api/chats/"+id, {method:"DELETE"});
   if (current && current.id === id) current = null;
   await loadChats();
-  if (!current) newChatLocal();
+  if (!current) resetToChat();
+}
+// Silently drop an unsent (empty) chat — no confirmation needed.
+async function deleteEmptyChat(id){
+  if (!id) return;
+  await fetch("/api/chats/"+id, {method:"DELETE"}).catch(()=>{});
 }
 async function newChat(){
-  await newChatLocal();
+  closeNav();
+  if (incognito){ incogReset(); input.focus(); return; }
+  // Drop the chat we're leaving if it was never used.
+  if (current && !(current.n > 0)) await deleteEmptyChat(current.id);
+  current = null;
+  inner.innerHTML = ""; emptyState();
+  $("chatTitle").textContent = "New chat";
   input.focus();
 }
-async function newChatLocal(){
+function incogReset(){
+  incogContext = [];
+  current = null;
+  inner.innerHTML = ""; emptyState();
+  $("chatTitle").textContent = "Incognito";
+}
+function setIncognito(on){
+  if (busy){ flash("Wait for the current reply to finish first"); return; }
+  incognito = on;
+  document.body.classList.toggle("incognito", on);
+  $("chatsWrap").hidden = on;
+  $("incogBanner").hidden = !on;
+  const btn = $("incognitoToggle");
+  btn.classList.toggle("on", on);
+  btn.setAttribute("aria-pressed", String(on));
+  btn.querySelector("span").textContent = on ? "Incognito · on" : "Incognito";
+  if (on){ incogReset(); }
+  else resetToChat();
+}
+async function resetToChat(){
+  if (chats.length){ await openChat(chats[0].id); }
+  else {
+    current = null;
+    inner.innerHTML = ""; emptyState();
+    $("chatTitle").textContent = "New chat";
+  }
+}
+async function ensureChat(){
+  // Chats are created lazily — only when the first message is actually sent.
+  if (current) return;
   const r = await fetch("/api/chats", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({model: modelSel.value})}).then(x=>x.json());
   current = r.chat;
   await loadChats();
-  inner.innerHTML = ""; emptyState();
-  $("chatTitle").textContent = "New chat";
+  $("chatTitle").textContent = r.chat.title;
 }
 async function openChat(id){
+  // Leaving a chat that never had a message: don't keep it around.
+  if (current && current.id !== id && !(current.n > 0))
+    await deleteEmptyChat(current.id);
   const r = await fetch("/api/chats/"+id).then(x=>x.json());
   current = r.chat;
   modelSel.value = r.chat.model;
@@ -160,6 +203,11 @@ async function openChat(id){
 }
 
 /* ---------------- models ---------------- */
+function ollamaLabel(base){
+  let h = base || "ollama";
+  try { h = new URL(base).host; } catch { /* not a URL — use as-is */ }
+  return /(^127\.|^localhost)/i.test(h) ? "Local Ollama server" : `Ollama server · ${h}`;
+}
 async function loadModels(){
   try {
     const r = await fetch("/api/models").then(async x => ({ok:x.ok, data:await x.json()}));
@@ -176,10 +224,11 @@ async function loadModels(){
     if (current) modelSel.value = current.model;
     $("ollamaDot").classList.toggle("ok", !!r.data.models);
     $("ollamaState").textContent = r.data.models ? "Ollama online" : "Ollama offline";
-    $("ollamaHost").textContent = "local · " + (d.ollama || "ollama");
+    $("ollamaHost").textContent = ollamaLabel(d.ollama);
   } catch {
     $("ollamaDot").classList.remove("ok");
     $("ollamaState").textContent = "Ollama offline";
+    $("ollamaHost").textContent = "Ollama offline";
   }
   if (modelDefault && !modelSel.value) modelSel.value = modelDefault;
 }
@@ -216,7 +265,7 @@ async function send(){
   if (busy) return;
   const text = input.value.trim();
   if (!text && !pendingImages.length) return;
-  if (!current) await newChatLocal();
+  if (!incognito) await ensureChat();
   clearEmpty();
   input.value = ""; autosize();
   addMessage("user", text || "(image)", {images: pendingImages});
@@ -235,9 +284,18 @@ async function send(){
   controller = new AbortController();
   let acc = "";
   try {
-    const resp = await fetch(`/api/chats/${current.id}/messages`, {
+    let url, body;
+    if (incognito){
+      // Context is carried by the client in `messages`; nothing is saved.
+      url = "/api/incognito";
+      body = {model: modelSel.value, text, images, messages: incogContext};
+    } else {
+      url = `/api/chats/${current.id}/messages`;
+      body = {text, images};
+    }
+    const resp = await fetch(url, {
       method:"POST", headers:{"Content-Type":"application/json"},
-      body: JSON.stringify({text, images}), signal: controller.signal,
+      body: JSON.stringify(body), signal: controller.signal,
     });
     if (!resp.ok) throw new Error((await resp.json()).error || resp.statusText);
     const reader = resp.body.getReader();
@@ -263,7 +321,14 @@ async function send(){
     const ms = Math.round(performance.now() - t0);
     metaEl.innerHTML = `<span>Home Agent · ${esc(modelSel.value)} · ${(ms/1000).toFixed(1)}s</span><span class="t">${esc(now())}</span>`;
     bindCopy(contentEl);
-    loadChats(); // refresh titles/counts
+    if (incognito){
+      // Remember this turn in memory only — keep a rolling context window.
+      incogContext.push({role:"user", content: text || "(image)"});
+      if (acc) incogContext.push({role:"assistant", content: acc});
+      if (incogContext.length > 40) incogContext = incogContext.slice(-40);
+    } else {
+      loadChats(); // refresh titles/counts
+    }
   } catch (e){
     if (e.name !== "AbortError") contentEl.innerHTML = `<span style="color:var(--err)">⚠ ${esc(e.message)}</span>`;
     if (e.name === "AbortError") flash("Stopped.");
@@ -297,6 +362,16 @@ $("newChat").onclick = newChat;
 $("attachBtn").onclick = () => fileIn.click();
 fileIn.onchange = () => fileIn.files.length && attach([...fileIn.files]);
 $("refreshModels").onclick = loadModels;
+$("incognitoToggle").onclick = () => setIncognito(!incognito);
+function closeNav(){ document.body.classList.remove("nav-open"); $("scrim").hidden = true; }
+$("menuBtn").onclick = () => {
+  const open = document.body.classList.toggle("nav-open");
+  $("scrim").hidden = !open;
+};
+$("scrim").onclick = closeNav;
+// open a chat closes the mobile nav
+const _openChat = openChat;
+openChat = async function(id){ await _openChat(id); closeNav(); };
 document.addEventListener("dragover", e => e.preventDefault());
 document.addEventListener("drop", e => {
   e.preventDefault();
@@ -308,6 +383,7 @@ document.addEventListener("drop", e => {
 (async () => {
   await loadModels();
   await loadChats();
-  if (chats.length){ await openChat(chats[0].id); } else { await newChatLocal(); }
+  if (chats.length){ await openChat(chats[0].id); }
+  else { current = null; inner.innerHTML = ""; emptyState(); $("chatTitle").textContent = "New chat"; }
   setSend(false); input.focus();
 })();

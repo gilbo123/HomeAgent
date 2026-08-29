@@ -10,6 +10,7 @@ Routing (kept deliberately flat and explicit):
     POST   /api/chats                 create chat            {model?}
     POST   /api/upload                upload image           multipart/form-data
     POST   /api/chats/<id>/messages   send turn, NDJSON out  {text, images[]}
+    POST   /api/incognito             unsaved turn, NDJSON   {model?, text, images[], messages[]}
     DELETE /api/chats/<id>            delete chat
 
 Design notes:
@@ -137,6 +138,8 @@ def make_handler(app: App):
             elif method == "POST":
                 if path == "/api/chats":
                     return self._create_chat()
+                if path == "/api/incognito":
+                    return self._incognito()
                 if path == "/api/upload":
                     return self._upload()
                 m = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")/messages", path)
@@ -184,6 +187,73 @@ def make_handler(app: App):
             payload = self._read_json()
             model = (payload.get("model") or app.cfg.default_model).strip() or app.cfg.default_model
             self._send_json(201, {"chat": app.db.create_chat(model)})
+
+        def _incognito(self) -> None:
+            """Answer one turn using context the *client* keeps in memory.
+
+            Nothing is written to the database: the request carries the
+            incognito history (plain text turns) plus the new user turn, we
+            stream the model reply back, and that's it.
+            """
+            import base64
+
+            payload = self._read_json()
+            text = (payload.get("text") or "").strip()
+            images = payload.get("images") or []
+            if not isinstance(images, list):
+                images = []
+
+            def _name(v: Any) -> str:
+                v = str(v).strip()
+                return v.removeprefix("/uploads/") if v.startswith("/uploads/") else v
+
+            images = [n for v in images if (n := _name(v)) and app.uploads.path_for(n)]
+            if not text and not images:
+                return self._send_error_json(400, "Empty message")
+
+            model = (payload.get("model") or app.cfg.default_model).strip() or app.cfg.default_model
+
+            # Sanitise the in-memory history the client sent us.
+            messages: list[dict[str, Any]] = []
+            for m in (payload.get("messages") or []):
+                if not isinstance(m, dict):
+                    continue
+                role = m.get("role")
+                content = str(m.get("content") or "").strip()
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+            if app.cfg.history_limit:
+                messages = messages[-app.cfg.history_limit:]
+
+            user_msg: dict[str, Any] = {"role": "user", "content": text or "(image)"}
+            b64: list[str] = []
+            for n in images:
+                p = app.uploads.path_for(n)
+                if p and os.path.isfile(p):
+                    with open(p, "rb") as f:
+                        b64.append(base64.b64encode(f.read()).decode("ascii"))
+            if b64:
+                user_msg["images"] = b64
+            messages.append(user_msg)
+
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+
+            def push(ev: dict) -> bool:
+                try:
+                    self.wfile.write((json.dumps(ev) + "\n").encode("utf-8"))
+                    self.wfile.flush()
+                    return True
+                except (BrokenPipeError, ConnectionResetError):
+                    return False
+
+            for ev in app.ollama.stream_chat(messages, model):
+                if not push(ev):
+                    break
+                if ev["type"] in ("done", "error"):
+                    break
 
         def _upload(self) -> None:
             content_type = self.headers.get("Content-Type", "")

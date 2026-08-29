@@ -76,15 +76,36 @@ class ChatDatabase:
         except (OperationFailure, PyMongoError) as e:
             raise RuntimeError(f"MongoDB index setup failed: {e}") from e
 
+    def list_chats(self) -> list[dict[str, Any]]:
+        """All chats, newest activity first (with a stored message count).
+
+        Empty placeholder chats (no messages, still the default title) are
+        dropped: they should never appear in the history list.
+        """
+        chats = [_doc(d) for d in
+                 self._chats.find().sort([("updated_at", -1), ("created_at", -1)])]
+        stale = [c["id"] for c in chats
+                 if not c.get("n") and str(c.get("title")) == "New chat"]
+        if stale:
+            self._drop_empty(stale)
+            return [c for c in chats if c["id"] not in set(stale)]
+        return chats
+
+    def _drop_empty(self, chat_ids: list[str]) -> None:
+        """Remove placeholder chats that were never used (no messages)."""
+        ids = list(chat_ids)
+        if not ids:
+            return
+        try:
+            self._chats.delete_many({"id": {"$in": ids}})
+            self._messages.delete_many({"chat_id": {"$in": ids}})
+        except PyMongoError:
+            pass  # best effort — the client simply won't list them
+
     def close(self) -> None:
         self._client.close()
 
     # ------------------------------------------------------------------ chats
-
-    def list_chats(self) -> list[dict[str, Any]]:
-        """All chats, newest activity first (with a stored message count)."""
-        return [_doc(d) for d in
-                self._chats.find().sort([("updated_at", -1), ("created_at", -1)])]
 
     def get_chat(self, chat_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
         """Return (chat, messages in id order). Raises ChatNotFoundError."""

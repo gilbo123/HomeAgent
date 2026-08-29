@@ -23,8 +23,7 @@
 * {
     box-sizing: border-box;
 }
-html,
-body {
+html {
     height: 100%;
 }
 body {
@@ -36,6 +35,7 @@ body {
     grid-template-columns: 280px 1fr;
     grid-template-rows: auto 1fr auto;
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
 }
 
@@ -73,8 +73,8 @@ aside {
 }
 .newbtn {
     margin: 4px 12px 12px;
-    padding: 9px 12px;
-    border: 0;
+    padding: 10px 14px;
+    border: 1px solid rgba(255, 255, 255, .12);
     border-radius: 9px;
     cursor: pointer;
     background: var(--accent);
@@ -175,15 +175,16 @@ header {
     display: flex;
     align-items: center;
     gap: 14px;
-    padding: 10px 18px;
+    padding: 14px 22px;
     background: var(--panel);
     border-bottom: 1px solid var(--line);
 }
 header h1 {
-    font-size: 15px;
+    font-size: 20px;
     margin: 0;
     font-weight: 600;
     flex: 1;
+    padding: 4px 0;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -192,10 +193,26 @@ header h1 {
     display: flex;
     align-items: center;
     gap: 8px;
+    margin: 4px 12px 10px;
+    padding: 6px 8px;
+    background: var(--panel2);
+    border: 1px solid var(--line);
+    border-radius: 10px;
 }
 .modelsel label {
     color: var(--dim);
     font-size: 12px;
+    flex: none;
+}
+.modelsel select {
+    flex: 1;
+    min-width: 0;
+    max-width: none;
+    padding: 6px 8px;
+}
+.modelsel .btnghost {
+    flex: none;
+    padding: 6px 10px;
 }
 select {
     background: var(--panel2);
@@ -608,6 +625,147 @@ textarea::placeholder {
 }
 .hint .err {
     color: var(--err);
+}
+
+/* --------------------------------------------------------------- incognito */
+.incogbtn {
+    margin: 4px 12px 10px;
+    padding: 9px 14px;
+    border: 1px solid var(--line);
+    border-radius: 9px;
+    cursor: pointer;
+    background: var(--panel2);
+    color: var(--dim);
+    font-size: 13px;
+    font-weight: 500;
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: center;
+    flex: none;
+}
+#incogBanner[hidden] {
+    display: none;
+}
+.incogbtn:hover {
+    border-color: var(--accent2);
+    color: var(--text);
+}
+.incogbtn.on {
+    border-color: var(--accent2);
+    background: rgba(91, 140, 255, .12);
+    color: var(--accent2);
+}
+.incogbanner {
+    margin: 0 12px 8px;
+    padding: 8px 10px;
+    font-size: 12px;
+    color: var(--accent2);
+    background: rgba(91, 140, 255, .10);
+    border: 1px solid rgba(122, 162, 255, .35);
+    border-radius: 8px;
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    line-height: 1.35;
+}
+body.incognito .chats {
+    display: none;
+}
+body.incognito #chatTitle {
+    color: var(--accent2);
+}
+.menuBtn {
+    display: none;
+}
+.scrim {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, .5);
+    z-index: 19;
+    border: 0;
+    padding: 0;
+}
+
+/* ------------------------------------------------------- mobile layout -- */
+@media (max-width: 760px) {
+    body {
+        grid-template-columns: 1fr;
+        grid-template-rows: auto 1fr auto;
+    }
+    header,
+    footer {
+        grid-column: 1;
+    }
+    header {
+        padding: 10px 14px;
+        gap: 10px;
+    }
+    .menuBtn {
+        display: inline-flex;
+        flex: none;
+    }
+    header h1 {
+        font-size: 16px;
+        padding: 0;
+    }
+    aside {
+        grid-row: auto;
+        grid-column: 1;
+        position: fixed;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: min(320px, 86vw);
+        z-index: 20;
+        transform: translateX(-102%);
+        transition: transform .18s ease;
+        box-shadow: 8px 0 30px rgba(0, 0, 0, .45);
+        border-right: 1px solid var(--line);
+        height: 100vh;
+        height: 100dvh;
+    }
+    body.nav-open aside {
+        transform: none;
+    }
+    body.nav-open .scrim {
+        display: block;
+    }
+    main {
+        grid-column: 1;
+    }
+    #feed {
+        padding-bottom: 24px;
+    }
+    .comp,
+    .inner,
+    .hint {
+        max-width: none;
+    }
+    .modelsel select {
+        max-width: none;
+    }
+    .msg .bubble {
+        max-width: 85%;
+    }
+    .empty {
+        padding: 40px 16px;
+    }
+    .empty .big {
+        font-size: 40px;
+    }
+}
+@media (max-width: 480px) {
+    .attachbtn {
+        display: none;
+    }
+    .msg .bubble {
+        max-width: 92%;
+    }
+    .chip {
+        font-size: 12.5px;
+    }
 }
 
 /* ---------------------------------------------------------------- scrollbars */

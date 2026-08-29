@@ -9,32 +9,41 @@
 </head>
 <body>
 
-    <!-- ===== header: current chat title + model picker ===== -->
+    <!-- ===== header: menu (mobile), current chat title ===== -->
     <header>
+        <button id="menuBtn" class="iconbtn" aria-label="Menu" title="Menu">☰</button>
         <h1 id="chatTitle">Home Agent</h1>
-        <div class="modelsel">
-            <label for="model">Model</label>
-            <select id="model"></select>
-            <button class="btnghost" id="refreshModels" title="Re-check models with Ollama">↻ models</button>
-        </div>
     </header>
 
-    <!-- ===== sidebar: brand, new-chat, history ===== -->
+    <!-- ===== sidebar: brand, model picker, new-chat, history ===== -->
     <aside>
         <div class="brand">
             <div class="logo">🏠</div>
             <div>
                 <b>Home Agent</b>
-                <small id="ollamaHost">local · ollama</small>
+                <small id="ollamaHost">Ollama server</small>
             </div>
+        </div>
+
+        <div class="modelsel">
+            <label for="model">Model</label>
+            <select id="model"></select>
+            <button class="btnghost" id="refreshModels" title="Re-check models with Ollama">↻</button>
         </div>
 
         <button class="newbtn" id="newChat">＋ New chat</button>
 
-        <div class="chats">
+        <div id="incogBanner" class="incogbanner" hidden>🕶 <span>Incognito — this chat isn’t saved</span></div>
+
+        <div class="chats" id="chatsWrap">
             <div class="hd">History</div>
             <div id="chatList"></div>
         </div>
+
+        <button class="incogbtn" id="incognitoToggle" aria-pressed="false"
+                title="Incognito — context is kept in memory for this chat, but nothing is saved (no history, no database)">
+            🕶 <span>Incognito</span>
+        </button>
 
         <div class="sbfoot">
             <span class="dot" id="ollamaDot"></span>
@@ -48,6 +57,9 @@
             <div class="inner" id="inner"></div>
         </div>
     </main>
+
+    <!-- ===== mobile nav scrim ===== -->
+    <div class="scrim" id="scrim" hidden></div>
 
     <!-- ===== composer: previews, input, tools ===== -->
     <footer>
