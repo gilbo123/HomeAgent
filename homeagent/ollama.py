@@ -7,9 +7,10 @@ Two responsibilities:
       as NDJSON to the browser.
 
 Event shapes yielded by :meth:`OllamaClient.stream_chat`:
-    {"type": "delta", "content": str}      — a chunk of model output
-    {"type": "done", "duration_ms": int}   — completion finished
-    {"type": "error", "error": str}        — something went wrong
+    {"type": "think_delta", "content": str} — a chunk of the model's thinking
+    {"type": "delta", "content": str}       — a chunk of model output
+    {"type": "done", "duration_ms": int}    — completion finished
+    {"type": "error", "error": str}         — something went wrong
 """
 
 from __future__ import annotations
@@ -48,20 +49,26 @@ class OllamaClient:
     # -------------------------------------------------------------- chat
 
     def stream_chat(
-        self, messages: list[dict[str, Any]], model: str | None = None
+        self,
+        messages: list[dict[str, Any]],
+        model: str | None = None,
+        think: bool = False,
     ) -> Generator[dict[str, Any], None, None]:
-        """POST a chat completion and yield delta/done/error events.
+        """POST a chat completion and yield think_delta/delta/done/error events.
 
         ``model`` defaults to the configured default model when omitted.
+        ``think`` enables thinking for thinking-capable models (send only for
+        models that support it — others reject the request).
         """
-        body = json.dumps(
-            {
-                "model": model or self.default_model,
-                "messages": messages,
-                "stream": True,
-                "options": {"temperature": self.temperature},
-            }
-        ).encode("utf-8")
+        payload: dict[str, Any] = {
+            "model": model or self.default_model,
+            "messages": messages,
+            "stream": True,
+            "options": {"temperature": self.temperature},
+        }
+        if think:
+            payload["think"] = True
+        body = json.dumps(payload).encode("utf-8")
         req = urlrequest.Request(
             self.host + "/api/chat",
             data=body,
@@ -95,7 +102,11 @@ class OllamaClient:
                         "duration_ms": int(obj.get("total_duration", 0)) // 1_000_000,
                     }
                     return
-                content = (obj.get("message") or {}).get("content") or ""
+                message = obj.get("message") or {}
+                thinking = message.get("thinking") or ""
+                if thinking:
+                    yield {"type": "think_delta", "content": thinking}
+                content = message.get("content") or ""
                 if content:
                     yield {"type": "delta", "content": content}
         finally:

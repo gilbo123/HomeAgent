@@ -34,6 +34,20 @@ function asciiTables(s){
   for (const r of body.slice(1)) html += "<tr>"+split(r).map(c=>"<td>"+esc(c)+"</td>").join("")+"</tr>";
   return html + "</tbody></table>";
 }
+// Decodes HTML entities the LLM sometimes emits (e.g. &#39; &quot; &amp; &#x27;)
+// to their actual characters. Named entities are usually auto-decoded by the
+// browser on HTML-parse; numeric ones (decimal/hex) are NOT — we handle both.
+function decodeEntities(s){
+  if(!s || s.indexOf("&") < 0) return s;
+  return s
+    .replace(/&(#\d+|#x[0-9a-fA-F]+|[a-zA-Z][a-zA-Z0-9]*);/g, (m, body) => {
+      try {
+        if (body[0] === "#") return String.fromCodePoint(body[1] === "x" ? parseInt(body.slice(2), 16) : parseInt(body.slice(1), 10));
+        const named = {amp:"&",lt:"<",gt:">",quot:'"',apos:"'",nbsp:" "};
+        return Object.prototype.hasOwnProperty.call(named, body) ? named[body] : m;
+      } catch { return m; }
+    });
+}
 function renderMarkdown(raw){
   let s = esc(raw);
   // 1) extract fenced code blocks so inner rules don't touch them
@@ -67,21 +81,30 @@ function renderMarkdown(raw){
   // 6) restore code blocks
   s = s.replace(/\u0002B(\d+)\u0002/g, (m,i)=>
       "<pre><button class='copy'>copy</button><code>" + esc(blocks[+i].code) + "</code></pre>");
-  return s;
+  // 7) decode any HTML entities the model emitted (&quot; &#39; &amp; ...) to real chars
+  return decodeEntities(s);
 }
 
 /* ---------------- rendering ---------------- */
+// A collapsible, light-grey block for the model's reasoning, shown above the answer.
+function thinkBlock(text, open=false){
+  if(!text) return "";
+  return `<details class="think"${open?" open":""}><summary>💭 Thinking</summary><div class="think-body">${decodeEntities(esc(text)).replace(/\n/g,"<br>")}</div></details>`;
+}
 function msgNode(role, content, opts={}){
   const el = document.createElement("div");
   el.className = "msg " + role;
   const avatar = role === "user" ? "You" : "🏠";
   const imgs = (opts.images||[]).map(u =>
     `<img src="${u}" alt="attachment" style="max-width:220px;border-radius:8px;margin-top:6px;display:block">`).join("");
+  const body = role === "user"
+    ? esc(content) + imgs
+    : (opts.thinking ? thinkBlock(opts.thinking) : "") + (content ? renderMarkdown(content) : "");
   el.innerHTML = `
     <div class="avatar">${avatar}</div>
     <div class="bubble">
       <div class="meta"><span>${role==="user"?"You":"Home Agent"}${opts.model?` · ${esc(opts.model)}`:""}${opts.ms?` · ${(opts.ms/1000).toFixed(1)}s`:""}</span><span class="t">${esc(now())}</span></div>
-      <div class="content">${role==="user" ? esc(content) + imgs : ""}</div>
+      <div class="content">${body}</div>
     </div>`;
   return el;
 }
@@ -177,7 +200,10 @@ async function ensureChat(){
   const r = await fetch("/api/chats", {method:"POST", headers:{"Content-Type":"application/json"},
     body: JSON.stringify({model: modelSel.value})}).then(x=>x.json());
   current = r.chat;
-  await loadChats();
+  // NB: do NOT call loadChats() here — list_chats() auto-drops empty
+  // "New chat" placeholders (n=0), which would delete the chat we just made
+  // and leave `current` pointing at a deleted id → 404 on the first send.
+  // The sidebar is refreshed at the end of send(), once the chat has a message.
   $("chatTitle").textContent = r.chat.title;
 }
 async function openChat(id){
@@ -193,7 +219,7 @@ async function openChat(id){
       // New server returns images as a JSON array; older payloads as a string.
       const imgs = Array.isArray(m.images) ? m.images : (m.images ? JSON.parse(m.images) : []);
       addMessage("user", m.content, {images: imgs});
-    } else addMessage("assistant", m.content, {model:m.model, ms:m.response_ms});
+    } else addMessage("assistant", m.content, {model:m.model, ms:m.response_ms, thinking:m.thinking||""});
   });
   if (!r.messages.length) emptyState();
   $("chatTitle").textContent = r.chat.title;
@@ -279,6 +305,22 @@ async function send(){
     inner.appendChild(n); if (stick) feed.scrollTop = feed.scrollHeight; return n; })();
   const contentEl = stickEl.querySelector(".content");
   const metaEl = stickEl.querySelector(".meta");
+  // Thinking block — created lazily on the first think_delta and inserted above
+  // the answer. It stays open while the model reasons, then collapses once the
+  // real answer starts streaming.
+  let thinkEl = null, thinkAcc = "", thinkOn = false;
+  function ensureThink(){
+    if (thinkEl) return thinkEl;
+    thinkEl = document.createElement("details");
+    thinkEl.className = "think"; thinkEl.open = true;
+    thinkEl.innerHTML = `<summary>💭 Thinking</summary><div class="think-body"></div>`;
+    contentEl.parentNode.insertBefore(thinkEl, contentEl);
+    return thinkEl;
+  }
+  function paintThink(){
+    const body = thinkEl.querySelector(".think-body");
+    body.innerHTML = decodeEntities(esc(thinkAcc)).replace(/\n/g,"<br>");
+  }
 
   const t0 = performance.now();
   controller = new AbortController();
@@ -309,7 +351,14 @@ async function send(){
         const line = buf.slice(0,i).trim(); buf = buf.slice(i+1);
         if (!line) continue;
         const ev = JSON.parse(line);
-        if (ev.type === "delta"){ acc += ev.content;
+        if (ev.type === "think_delta"){
+          ensureThink();
+          thinkAcc += ev.content;
+          paintThink();
+          if (atBottom()) feed.scrollTop = feed.scrollHeight;
+        } else if (ev.type === "delta"){
+          if (thinkEl && thinkEl.open) thinkEl.open = false;  // answer began — tuck the thinking away
+          acc += ev.content;
           contentEl.innerHTML = renderMarkdown(acc) + `<span class="cursor"></span>`;
           if (atBottom()) feed.scrollTop = feed.scrollHeight;
         } else if (ev.type === "error"){

@@ -331,6 +331,34 @@ body .msg.user .meta {
 .msg.assistant .content {
     color: var(--text);
 }
+/* Model reasoning — a collapsible, muted block above the answer */
+.think {
+    margin: 0 0 8px;
+    border-left: 3px solid rgba(139,150,168,.35);
+    border-radius: 4px;
+    background: rgba(139,150,168,.07);
+    font-size: 13px;
+    color: var(--dim);
+}
+.think summary {
+    cursor: pointer;
+    padding: 5px 10px;
+    font-size: 12px;
+    letter-spacing: .02em;
+    color: var(--dim);
+    user-select: none;
+    list-style: none;
+}
+.think summary::-webkit-details-marker { display: none; }
+.think summary::before { content: "▸ "; transition: transform .15s; display: inline-block; }
+.think[open] summary::before { content: "▾ "; }
+.think-body {
+    padding: 4px 10px 8px 24px;
+    line-height: 1.55;
+    color: var(--dim);
+    max-height: 260px;
+    overflow-y: auto;
+}
 .content .cursor {
     display: inline-block;
     width: 8px;
