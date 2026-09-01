@@ -35,6 +35,7 @@ DEFAULTS: dict[str, dict[str, Any]] = {
         "model": "qwen3.8:27b",            # default model for new chats
         "temperature": 0.7,                # sampling temperature
         "history_limit": 100,              # max messages sent back as context
+        "thinking": True,                  # enable model thinking for thinking-capable models
     },
     "storage": {
         "mongo_uri": "mongodb://127.0.0.1:27017/",  # MongoDB connection string
@@ -60,6 +61,7 @@ class Config:
     default_model: str
     temperature: float
     history_limit: int
+    thinking: bool
 
 
     static_dir: str
@@ -135,6 +137,7 @@ def load_config(path: str) -> Config:
     history_limit = _require(cfg["ollama"], "history_limit", int, int, "ollama")
     if history_limit < 2:
         raise ConfigError(f"ollama.history_limit must be >= 2, got {history_limit}")
+    thinking = _require(cfg["ollama"], "thinking", bool, bool, "ollama")
 
     mongo_uri = _require(cfg["storage"], "mongo_uri", str, str, "storage")
     if not mongo_uri.strip():
@@ -157,6 +160,7 @@ def load_config(path: str) -> Config:
         default_model=model.strip(),
         temperature=float(temperature),
         history_limit=history_limit,
+        thinking=thinking,
         mongo_uri=mongo_uri.strip().rstrip("/") + "/",
         mongo_db=mongo_db.strip(),
         static_dir=_resolve(static_dir, base_dir),

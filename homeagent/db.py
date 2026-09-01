@@ -150,12 +150,14 @@ class ChatDatabase:
         })
         self._bump(chat_id, now, title_if_first=text)
 
-    def add_assistant_message(self, chat_id: str, content: str, model: str, response_ms: int) -> None:
+    def add_assistant_message(self, chat_id: str, content: str, model: str, response_ms: int,
+                             thinking: str = "") -> None:
         now = int(time.time())
         self._messages.insert_one({
             "chat_id": chat_id,
             "role": "assistant",
             "content": content,
+            "thinking": thinking,
             "model": model,
             "response_ms": response_ms,
             "created_at": now,
@@ -187,7 +189,7 @@ class ChatDatabase:
         rows = [
             {"role": d.get("role"), "content": d.get("content"), "images": d.get("images")}
             for d in self._messages
-            .find({"chat_id": chat_id}, {"role": 1, "content": 1, "images": 1})
+            .find({"chat_id": chat_id}, {"role": 1, "content": 1, "images": 1, "thinking": 1})
             .sort([("created_at", 1)])
         ]
         tail = rows[-self._history_limit:] if self._history_limit else rows

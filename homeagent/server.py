@@ -32,6 +32,7 @@ import re
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any
+from urllib import request as urlrequest
 
 from . import __version__
 from .app import App
@@ -39,6 +40,32 @@ from .db import ChatNotFoundError
 from .uploads import UploadError, UploadTooLarge, UnsupportedImage
 
 CHAT_ID_RE = re.compile(r"[\w-]+")
+
+_thinking_cache: tuple[float, frozenset[str]] | None = None
+_thinking_ttl = 120.0  # seconds
+
+
+def _thinking_models(host: str) -> frozenset[str]:
+    """Return the set of model names that support thinking (cached briefly).
+
+    Best-effort: ``capabilities`` is metadata that older Ollama may omit, and
+    the request can fail — in either case we simply return an empty set, which
+    means "don't enable thinking" (safe, since non-thinking models reject it).
+    """
+    global _thinking_cache
+    now = time.time()
+    if _thinking_cache and now - _thinking_cache[0] < _thinking_ttl:
+        return _thinking_cache[1]
+    models: set[str] = set()
+    try:
+        tags = json.loads(urlrequest.urlopen(host + "/api/tags", timeout=5).read())
+        for m in tags.get("models", []):
+            if "thinking" in (m.get("capabilities") or []):
+                models.add(m["name"])
+    except Exception:  # noqa: BLE001
+        pass
+    _thinking_cache = (now, frozenset(models))
+    return _thinking_cache[1]
 
 
 # --------------------------------------------------------------------------
@@ -170,6 +197,7 @@ def make_handler(app: App):
                 })
             self._send_json(200, {
                 "models": models,
+                "thinking": sorted(_thinking_models(app.cfg.ollama_host)),
                 "default": app.cfg.default_model,
                 "ollama": app.cfg.ollama_host,
             })
@@ -249,7 +277,8 @@ def make_handler(app: App):
                 except (BrokenPipeError, ConnectionResetError):
                     return False
 
-            for ev in app.ollama.stream_chat(messages, model):
+            think = app.cfg.thinking and model in _thinking_models(app.cfg.ollama_host)
+            for ev in app.ollama.stream_chat(messages, model, think=think):
                 if not push(ev):
                     break
                 if ev["type"] in ("done", "error"):
@@ -312,19 +341,24 @@ def make_handler(app: App):
                 except (BrokenPipeError, ConnectionResetError):
                     return False
 
+            think = app.cfg.thinking and model in _thinking_models(app.cfg.ollama_host)
             started = time.monotonic()
             acc: list[str] = []
-            for ev in app.ollama.stream_chat(messages, model):
+            acc_think: list[str] = []
+            for ev in app.ollama.stream_chat(messages, model, think=think):
                 if ev["type"] == "delta":
                     acc.append(ev["content"])
+                elif ev["type"] == "think_delta":
+                    acc_think.append(ev["content"])
                 if not push(ev):
                     break  # client left — but keep draining so we save below
                 if ev["type"] in ("done", "error"):
                     break
             ms = int((time.monotonic() - started) * 1000)
-            if acc:
+            if acc or acc_think:
                 try:
-                    app.db.add_assistant_message(chat_id, "".join(acc), model, ms)
+                    app.db.add_assistant_message(chat_id, "".join(acc), model, ms,
+                                                 thinking="".join(acc_think))
                 except Exception as e:  # noqa: BLE001
                     print(f"[!] failed to save assistant message: {e}", flush=True)
 
