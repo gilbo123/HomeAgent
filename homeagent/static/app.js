@@ -428,11 +428,132 @@ document.addEventListener("drop", e => {
     attach([...e.dataTransfer.files].filter(f=>f.type.startsWith("image/")));
 });
 
-/* ---------------- init ---------------- */
-(async () => {
+/* ---------------- auth (splash / login / set-reset) ---------------- */
+let currentUser = null, selUser = null;
+const $auth    = $("auth"),
+      $loginV  = $("authLogin"),
+      $resetV  = $("authSetReset");
+
+function err(el, msg){ el.textContent = msg || ""; el.hidden = !msg; }
+function showLoginView(){
+  $loginV.hidden = false; $resetV.hidden = true; $auth.hidden = false;
+  $("srDone").hidden = true; err($("srErr"), "");
+}
+function showResetView(){
+  $loginV.hidden = true; $resetV.hidden = false; $auth.hidden = false;
+  err($("srErr"), "");
+}
+function pickTile(username){
+  selUser = username;
+  $("authWho").textContent = username;
+  document.querySelectorAll(".auth-tile").forEach(t =>
+    t.classList.toggle("sel", t.dataset.username === username));
+  $("authPass").value = ""; $("authPass").focus();
+  err($("authErr"), "");
+}
+async function loadTiles(){
+  let users = [];
+  try { users = (await (await fetch("/auth/users")).json()).users || []; } catch { users = []; }
+  const tiles = $("authTiles"); tiles.innerHTML = "";
+  users.forEach(u => {
+    const t = document.createElement("div");
+    t.className = "auth-tile"; t.dataset.username = u.username;
+    t.innerHTML = `<b>${esc(u.username)}</b><span class="badge">${u.activated ? "signed up" : "pending activation"}</span>`;
+    t.onclick = () => pickTile(u.username);
+    tiles.appendChild(t);
+  });
+  $("authTilesEmpty").hidden = users.length > 0;
+  selUser = null;
+}
+async function doLogin(){
+  if (!selUser){ err($("authErr"), "Select your username tile first"); return; }
+  err($("authErr"), "");
+  try {
+    const r = await fetch("/auth/login", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username: selUser, password: $("authPass").value }),
+    });
+    const d = r.ok ? {} : (await r.json().catch(() => ({})));
+    if (!r.ok) throw new Error(d.error || "sign-in failed");
+    await enterApp();
+  } catch (e){ err($("authErr"), e.message); }
+}
+async function submitSetReset(){
+  const username = $("srUser").value.trim(), email = $("srEmail").value.trim(),
+        password = $("srPass").value, confirm = $("srConfirm").value;
+  if (!username || !email){ err($("srErr"), "Fill in username and email"); return; }
+  if (password.length < 8){ err($("srErr"), "Password must be at least 8 characters"); return; }
+  if (password !== confirm){ err($("srErr"), "Passwords do not match"); return; }
+  err($("srErr"), "");
+  try {
+    const r = await fetch("/auth/set-or-reset", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, email, password, confirm }),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || "request failed");
+    // PRIVACY: only ever render the link when the server explicitly hands it
+    // over (email disabled, or a documented error fallback). When it went to
+    // the inbox we never received the token, so there is nothing to show.
+    const box = $("srDone"), linkInput = $("srLink"),
+          linkWrap = $("srLinkWrap"), linkHint = $("srLinkHint"),
+          note = $("srEmailNote");
+    if (d.delivery === "inbox") {
+      linkWrap.hidden = true;   // no on-screen link — it's in the inbox
+      note.textContent = "Activation link sent to " + email +
+        " — open it to finish your " + (d.is_new ? "setup" : "password reset") + ".";
+    } else if (d.delivery === "fallback-after-error") {
+      linkWrap.hidden = false;
+      linkHint.textContent = "⚠ Email failed (" + (d.email_note || "send error") +
+        ") — use this one-time link, then fix the SMTP config.";
+      linkInput.value = location.origin + "/auth/activate?token=" + encodeURIComponent(d.token);
+      note.textContent = "This link works for about an hour and from any device. Finish now, or fix email for a private next time.";
+    } else { // delivery === "off" (SMTP not configured)
+      linkWrap.hidden = false;
+      linkHint.textContent = "⚠ Email is not configured, so the link is shown on this screen only. Anyone who can see or reach this browser could finish the reset.";
+      linkInput.value = location.origin + "/auth/activate?token=" + encodeURIComponent(d.token);
+      note.textContent = "Finish in this browser now, or set email_host in homeagent/config.py for a private inbox link.";
+    }
+    box.hidden = false;
+  } catch (e){ err($("srErr"), e.message); }
+}
+async function logout(){
+  try { await fetch("/auth/logout", { method: "POST" }); } catch {}
+  location.reload();
+}
+async function enterApp(){
+  const r = await (await fetch("/auth/me")).json();
+  if (!r.user) throw new Error("not signed in");
+  currentUser = r.user;
+  $auth.hidden = true;
+  $("userFoot").hidden = false;
+  $("statusFoot").hidden = false;
+  $("userName").textContent = r.user.username || "";
   await loadModels();
   await loadChats();
-  if (chats.length){ await openChat(chats[0].id); }
-  else { current = null; inner.innerHTML = ""; emptyState(); $("chatTitle").textContent = "New chat"; }
+  // NEW-CHAT-BY-DEFAULT: start blank; history loads only on click.
+  current = null; inner.innerHTML = ""; emptyState();
+  $("chatTitle").textContent = "New chat";
   setSend(false); input.focus();
+}
+function wireAuth(){
+  $("authLoginBtn").onclick = doLogin;
+  $("authPass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
+  $("srSubmit").onclick = submitSetReset;
+  $("logoutBtn").onclick = logout;
+  document.querySelectorAll('a[href="#setreset"]').forEach(a =>
+    a.onclick = e => { e.preventDefault(); showResetView(); });
+  document.querySelectorAll('a[href="#login"]').forEach(a =>
+    a.onclick = e => { e.preventDefault(); showLoginView(); });
+}
+
+/* ---------------- init ---------------- */
+(async () => {
+  wireAuth();
+  let ok = false;
+  try {
+    const me = await (await fetch("/auth/me")).json();
+    if (me.user) { await enterApp(); ok = true; }
+  } catch { ok = false; }
+  if (!ok) { await loadTiles(); showLoginView(); }
 })();

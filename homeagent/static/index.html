@@ -9,6 +9,71 @@
 </head>
 <body>
 
+    <!-- ===== AUTH SPLASH (fixed overlay; hidden once signed in) ===== -->
+    <div id="auth" class="auth-overlay" hidden>
+      <div class="auth-inner">
+        <div class="auth-brand">
+          <div class="auth-logo">🏠</div>
+          <h1>Home Agent</h1>
+          <p class="auth-tag">Local chat · sign in to start</p>
+        </div>
+
+        <!-- Login -->
+        <div id="authLogin" class="auth-panel">
+          <h2>Sign in</h2>
+          <div id="authTiles" class="auth-tiles"></div>
+          <p id="authTilesEmpty" class="auth-sub" hidden>No accounts yet — <a href="#setreset">set yours up</a>.</p>
+          <div class="auth-field">
+            <label for="authPass"><span id="authWho">Password</span></label>
+            <input type="password" id="authPass" autocomplete="current-password"
+                   placeholder="your password">
+          </div>
+          <button id="authLoginBtn" class="btn primary" type="button">Sign in</button>
+          <p class="auth-sublink">
+            <a href="#setreset">Set or reset password</a>
+          </p>
+          <p id="authErr" class="auth-err" hidden></p>
+        </div>
+
+        <!-- Set / Reset -->
+        <div id="authSetReset" class="auth-panel" hidden>
+          <h2>Set or reset password</h2>
+          <p class="auth-sub">Use this for a first-time set <i>or</i> a reset — same flow.</p>
+          <div class="auth-field">
+            <label for="srUser">Username</label>
+            <input id="srUser" autocomplete="off" maxlength="40" spellcheck="false">
+          </div>
+          <div class="auth-field">
+            <label for="srEmail">Email <span class="muted">· account identity &amp; reset link</span></label>
+            <input id="srEmail" type="email" autocomplete="email" spellcheck="false">
+          </div>
+          <div class="auth-field">
+            <label for="srPass">Password <span class="muted">· min 8 chars</span></label>
+            <input id="srPass" type="password" autocomplete="new-password">
+          </div>
+          <div class="auth-field">
+            <label for="srConfirm">Confirm password</label>
+            <input id="srConfirm" type="password" autocomplete="new-password">
+          </div>
+          <button id="srSubmit" class="btn primary" type="button">Request activation link</button>
+          <p id="srErr" class="auth-err" hidden></p>
+
+          <div id="srDone" hidden style="margin-top:16px;background:var(--panel2);padding:14px;border-radius:10px">
+            <!-- On-screen link: shown ONLY as a fallback (email off, or a
+                 documented error). When the link went to the inbox it is
+                 hidden and its token is not returned by the server. -->
+            <div id="srLinkWrap" hidden>
+              <p id="srLinkHint" style="margin:0 0 8px;font-size:13px"></p>
+              <label style="font-size:12px;color:var(--dim)">One-time activation link (copy &amp; open):</label>
+              <input id="srLink" readonly style="width:100%;box-sizing:border-box;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;font:13px/1.4 var(--mono)">
+            </div>
+            <p id="srEmailNote" class="auth-sub" style="margin-top:8px"></p>
+            <a href="#login" class="auth-sublink" style="margin-top:12px;display:inline-block">← Back to sign in</a>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- ===== header: menu (mobile), current chat title ===== -->
     <header>
         <button id="menuBtn" class="iconbtn" aria-label="Menu" title="Menu">☰</button>
@@ -45,7 +110,12 @@
             🕶 <span>Incognito</span>
         </button>
 
-        <div class="sbfoot">
+        <!-- signed-in user (hidden until authenticated) -->
+        <div class="sbfoot" id="userFoot" hidden>
+            <span id="userName" class="chip-user">—</span>
+            <button id="logoutBtn" class="btnghost" title="Sign out">Sign out</button>
+        </div>
+        <div class="sbfoot" id="statusFoot">
             <span class="dot" id="ollamaDot"></span>
             <span id="ollamaState">checking Ollama…</span>
         </div>

@@ -10,7 +10,11 @@ injection):
 Nothing else in the package knows about the others' construction —
 each collaborator receives exactly the dependencies it needs.
 
-Run directly:  ``python -m homeagent.main --config homeagent.toml``
+Configuration lives in a single place: homeagent/config.py (the CONFIG
+constant). There is no other config file and no env vars. Edit that
+one file and restart.
+
+Run directly:  ``python -m homeagent.main``
 """
 
 from __future__ import annotations
@@ -21,8 +25,9 @@ import sys
 import webbrowser
 from http.server import ThreadingHTTPServer
 from . import __version__
+from .accounts import EmailSettings, UserStore
 from .app import App
-from .config import Config, ConfigError, load_config
+from .config import CONFIG, Config
 from .db import ChatDatabase
 from .ollama import OllamaClient
 from .server import make_handler
@@ -43,6 +48,24 @@ def build_app(config: Config) -> App:
         history_limit=config.history_limit,
         upload_dir=config.upload_dir,
     )
+    # Email settings for the optional set/reset activation flow. The base URL
+    # is what the browser will land on — when the host is 0.0.0.0 we advertise
+    # 127.0.0.1 (matching how main.py opens the browser).
+    base_host = "127.0.0.1" if config.host in ("0.0.0.0", "::") else config.host
+    email = EmailSettings(
+        host=config.email_host,
+        port=config.email_port,
+        username=config.email_username,
+        password=config.email_password,
+        from_addr=config.email_from,
+        use_tls=config.email_use_tls,
+        base_url=f"http://{base_host}:{config.port}",
+    )
+    users = UserStore(
+        mongo_uri=config.mongo_uri,
+        db_name=config.mongo_db,
+        email=email,
+    )
     ollama = OllamaClient(
         host=config.ollama_host,
         default_model=config.default_model,
@@ -57,6 +80,7 @@ def build_app(config: Config) -> App:
         db=db,
         ollama=ollama,
         uploads=uploads,
+        users=users,
         static_dir=config.static_dir,
     )
 
@@ -74,14 +98,15 @@ def create_server(app: App) -> ThreadingHTTPServer:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """CLI entry point. Returns a process exit code."""
+    """CLI entry point. Returns a process exit code.
+
+    The argparse block is kept so ``--help`` still works, but there is
+    nothing to point at — CONFIG in homeagent/config.py is the source.
+    """
     parser = argparse.ArgumentParser(prog="homeagent", description=__doc__)
-    parser.add_argument(
-        "-c", "--config",
-        default="homeagent.toml",
-        help="Path to the TOML config file (default: ./homeagent.toml)",
-    )
-    args = parser.parse_args(argv)
+    # Intentionally no --config flag: there is exactly one config file
+    # (homeagent/config.py) and it is a Python constant.
+    parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO,
@@ -89,11 +114,7 @@ def main(argv: list[str] | None = None) -> int:
         datefmt="%H:%M:%S",
     )
 
-    try:
-        config = load_config(args.config)
-    except (ConfigError, OSError) as e:
-        print(f"error: {e}", file=sys.stderr)
-        return 1
+    config = CONFIG
 
     try:
         app = build_app(config)

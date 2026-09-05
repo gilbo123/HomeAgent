@@ -67,7 +67,9 @@ class ChatDatabase:
         try:
             # Also acts as a liveness check: raises if mongod is unreachable.
             self._chats.create_index("id", unique=True)
-            self._chats.create_index([("updated_at", -1), ("created_at", -1)])
+            # Owner-first compound indexes: every query is scoped to an owner,
+            # so (owner, ...) is the natural access path.
+            self._chats.create_index([("owner", 1), ("updated_at", -1), ("created_at", -1)])
             self._messages.create_index([("chat_id", 1), ("created_at", 1)])
         except ServerSelectionTimeoutError as e:
             raise RuntimeError(
@@ -76,14 +78,15 @@ class ChatDatabase:
         except (OperationFailure, PyMongoError) as e:
             raise RuntimeError(f"MongoDB index setup failed: {e}") from e
 
-    def list_chats(self) -> list[dict[str, Any]]:
-        """All chats, newest activity first (with a stored message count).
+    def list_chats(self, owner: str) -> list[dict[str, Any]]:
+        """That owner's chats, newest activity first (with a message count).
 
         Empty placeholder chats (no messages, still the default title) are
         dropped: they should never appear in the history list.
         """
         chats = [_doc(d) for d in
-                 self._chats.find().sort([("updated_at", -1), ("created_at", -1)])]
+                 self._chats.find({"owner": owner})
+                 .sort([("updated_at", -1), ("created_at", -1)])]
         stale = [c["id"] for c in chats
                  if not c.get("n") and str(c.get("title")) == "New chat"]
         if stale:
@@ -102,14 +105,29 @@ class ChatDatabase:
         except PyMongoError:
             pass  # best effort — the client simply won't list them
 
+    def claim_unowned(self, owner: str) -> int:
+        """Migrate pre-auth chats (no ``owner``) to ``owner``. Returns the count.
+
+        Idempotent: once a chat has an owner it is never re-claimed, so only
+        the very first activation does anything.
+        """
+        try:
+            res = self._chats.update_many(
+                {"$or": [{"owner": {"$exists": False}}, {"owner": None}]},
+                [{"$set": {"owner": owner}}],
+            )
+            return res.modified_count
+        except PyMongoError:
+            return 0
+
     def close(self) -> None:
         self._client.close()
 
     # ------------------------------------------------------------------ chats
 
-    def get_chat(self, chat_id: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """Return (chat, messages in id order). Raises ChatNotFoundError."""
-        chat = self._chats.find_one({"id": chat_id})
+    def get_chat(self, chat_id: str, owner: str) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Return (chat, messages in id order) for that owner. Raises ChatNotFoundError."""
+        chat = self._chats.find_one({"id": chat_id, "owner": owner})
         if chat is None:
             raise ChatNotFoundError(chat_id)
         msgs = list(
@@ -119,10 +137,11 @@ class ChatDatabase:
         )
         return _doc(chat), [_doc(m) for m in msgs]
 
-    def create_chat(self, model: str) -> dict[str, Any]:
+    def create_chat(self, model: str, owner: str) -> dict[str, Any]:
         now = int(time.time())
         chat = {
             "id": uuid.uuid4().hex,
+            "owner": owner,
             "title": "New chat",
             "model": model,
             "created_at": now,
@@ -132,8 +151,9 @@ class ChatDatabase:
         self._chats.insert_one(chat)
         return _doc(chat)
 
-    def delete_chat(self, chat_id: str) -> None:
-        self._chats.delete_one({"id": chat_id})
+    def delete_chat(self, chat_id: str, owner: str) -> None:
+        # Scoped by owner: a token-holding user can only delete their own chat.
+        self._chats.delete_one({"id": chat_id, "owner": owner})
         self._messages.delete_many({"chat_id": chat_id})
 
     # ---------------------------------------------------------------- messages
