@@ -5,21 +5,23 @@ from pathlib import Path
 class App:
     """Dependency-injected application facade handed to every request.
 
-    Holds the four collaborators plus the static-file location, so the
+    Holds the collaborators plus the static-file location, so the
     HTTP handler never reaches into module-level state.
     """
 
-    def __init__(self, cfg, db, ollama, uploads, static_dir: str | Path):
+    def __init__(self, cfg, db, ollama, uploads, users, static_dir: str | Path):
         self.cfg = cfg
         self.db = db
         self.ollama = ollama
         self.uploads = uploads
+        self.users = users
         self.static_dir = static_dir
 
     # -- lifecycle ------------------------------------------------------
     def close(self) -> None:
-        """Release held resources (database connection)."""
+        """Release held resources (database connections)."""
         self.db.close()
+        self.users.close()
 
     # -- convenience lookups used by the handler ------------------------
     @property

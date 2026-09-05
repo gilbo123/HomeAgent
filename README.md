@@ -2,7 +2,7 @@
 
 A self-hosted web chat UI for [Ollama](https://ollama.com) models running on
 your own machine. Talk to `qwen3.8:27b` (or any model you've pulled) through a
-professional single-page interface — no cloud, no accounts, zero pip installs.
+professional single-page interface — no cloud, zero pip installs.
 
 ![stack](https://img.shields.io/badge/python-stdlib%20only-5b8cff)
 ![db](https://img.shields.io/badge/storage-mongodb-7aa2ff)
@@ -10,6 +10,11 @@ professional single-page interface — no cloud, no accounts, zero pip installs.
 
 ## Features
 
+- **User profiles & per-user privacy** — a splash screen where each user picks
+  their username tile and enters a password; every chat is scoped to its owner
+  so one account never sees another's history (see [Users & privacy](#users--privacy)).
+- **New-chat-by-default** — each session opens on a blank chat; your history is
+  in the sidebar and loads only when you click a conversation.
 - **Professional dark UI** — static header / sidebar / composer; only the chat
   panel scrolls.
 - **Streaming responses** with a live **response timer** (seconds + ms shown per
@@ -29,7 +34,7 @@ professional single-page interface — no cloud, no accounts, zero pip installs.
 - **Single script** — `./run.sh` and you're done.
 - **Modular, DI-based code** — small single-responsibility modules, a frozen
   `Config` dataclass, and a composition root. **No environment variables** —
-  all configuration lives in one TOML file.
+  all configuration lives in a single Python module (`homeagent/config.py`).
 
 ## Requirements
 
@@ -49,29 +54,42 @@ Ollama is reachable and warns if it isn't.
 
 ## Configuration
 
-**All** settings live in [`homeagent.toml`](homeagent.toml) — there are *no*
-environment variables anywhere. Missing keys fall back to safe defaults.
+**All** settings live in a single Python module —
+[`homeagent/config.py`](homeagent/config.py) — and there are *no* environment
+variables anywhere. Change a value there and restart; done. There is no
+second file and no env-var fallback to keep in sync with.
 
-```toml
-[server]
-host = "127.0.0.1"            # bind address
-port = 8321                   # listen port
-open_browser = false          # auto-open the UI on start
+```python
+# homeagent/config.py
+CONFIG = Config(
+    host="0.0.0.0",                          # bind address
+    port=8321,                               # listen port
+    open_browser=False,                      # auto-open the UI on start
 
-[ollama]
-host = "http://192.168.1.200:11434"  # Ollama endpoint
-model = "qwen3.8:27b"       # default model for new chats
-temperature = 0.7           # sampling temperature
-history_limit = 60          # max context messages sent to the model per turn
+    ollama_host="http://192.168.1.200:11434",# Ollama endpoint
+    default_model="qwen3.8:27b",             # default model for new chats
+    temperature=0.7,                         # sampling temperature
+    history_limit=60,                        # context messages per turn
 
-[storage]
-mongo_uri  = "mongodb://127.0.0.1:27017/"  # MongoDB connection string
-mongo_db   = "homeagent"                   # database name
-upload_dir = "/tmp/homeagent/uploads"      # directory for uploaded images
-max_image_mb = 20                          # per-image upload size limit (MB)
+    mongo_uri="mongodb://127.0.0.1:27017/",  # MongoDB connection string
+    mongo_db="homeagent",                    # database name
+    upload_dir="/tmp/homeagent/uploads",     # directory for uploaded images
+    max_image_mb=20,                         # per-image upload size limit (MB)
+
+    # Optional SMTP for password set/reset activation links. When
+    # email_username is empty sending is disabled and the link is shown
+    # on-screen (still works end-to-end).
+    email_host="smtp.gmail.com",
+    email_port=587,
+    email_username="you@gmail.com",          # e.g. an app-specific Gmail
+    email_password="app-password…",       # e.g. a Gmail App Password
+    email_from="you@gmail.com",              # default: email_username
+    email_use_tls=True,                      # 587→STARTTLS, 465→SMTP_SSL
+)
 ```
 
-Use a different file with `./run.sh --config /path/to/other.toml`.
+> The app's own config is a Python constant, not a file you parse. Edit it
+> and `./run.sh` picks it up on the next start.
 
 ## Architecture
 
@@ -79,25 +97,27 @@ Use a different file with `./run.sh --config /path/to/other.toml`.
 homeagent/
 ├── __init__.py    # version + package docstring
 ├── app.py         # App facade — the DI object handed to every request
-├── config.py      # frozen Config dataclass + TOML loader + validation
-├── db.py          # ChatDatabase (MongoDB: chats + messages, cascade, history)
+├── accounts.py    # UserStore (profiles, sessions, activation, optional SMTP)
+├── config.py      # frozen Config dataclass + CONFIG constant (one file)
+├── db.py          # ChatDatabase (MongoDB: per-owner chats + messages)
 ├── ollama.py      # OllamaClient (list models, NDJSON chat streaming)
-├── server.py      # HTTP handler factory (routes, JSON, NDJSON stream, uploads)
+├── server.py      # HTTP handler factory (auth + data routes, streams, uploads)
 ├── uploads.py     # UploadStore (multipart parse, MIME allow-list, storage)
 ├── main.py        # composition root — wires everything, runs the server
-└── index.html     # the entire UI (HTML + CSS + JS, no build step)
+└── static/        # the UI (index.html, style.css, app.js; no build step)
 ```
 
 Each module does one job and receives its dependencies explicitly:
-`Config` → `ChatDatabase` / `OllamaClient` / `UploadStore` → `App` → handler
-factory. No module-level globals, no hidden coupling.
+`Config` → `ChatDatabase` / `UserStore` / `OllamaClient` / `UploadStore` →
+`App` → handler factory. No module-level globals, no hidden coupling.
 
 ## Files
 
 | Path                  | Purpose                                    |
 |-----------------------|--------------------------------------------|
 | `homeagent/`          | The application package (see above)        |
-| `homeagent.toml`      | All runtime configuration (the only knob)  |
+| `homeagent/static/`   | The web UI: `index.html`, `style.css`, `app.js` |
+| `homeagent/config.py` | All runtime configuration (the only knob)  |
 | `run.sh`              | Launcher with Ollama health check          |
 | `~/.virtualenvs/chat` | Python env with `pymongo` (auto-detected)  |
 | `/tmp/homeagent/`     | Upload dir + logs (created on first run)   |
@@ -113,13 +133,45 @@ factory. No module-level globals, no hidden coupling.
 - `POST /api/upload` — multipart image upload → `{"url":"/uploads/<id>.png"}`
 - `GET  /api/models` — models pulled on Ollama + default
 
+### Auth endpoints (public; the `/api/*` + `/uploads/*` routes require a session)
+
+- `GET  /auth/me` — the signed-in user, or `{"user": null}`
+- `GET  /auth/users` — lightweight list of accounts (for the splash tiles)
+- `POST /auth/login` — `{"username","password"}` → sets the session cookie
+- `POST /auth/logout` — clears the session
+- `POST /auth/set-or-reset` — request a set/reset link
+  → `{"token","is_new","email_sent","email_note"}`
+- `GET  /auth/activate?token=…` — finalize the link, sign in, redirect to `/`
+
+## Users & privacy
+
+- **Splash screen** — the first thing you see is a tile of every username
+  with a single password field, plus a "Set or reset password" link.
+- **Set / reset is one flow** — four fields (username, email, password,
+  confirm). When email is configured, the activation link is sent to the
+  inbox *only* (not shown on-screen) so nobody shoulder-surfing can finish
+  the reset. The on-screen link appears only as an explicitly-warned
+  fallback when email is unconfigured or the send failed — so the flow
+  always works, but the private path is the default.
+- **Per-user history** — every chat is stored with an `owner`, and every
+  `chats`/`messages` query is scoped to the signed-in user. One account can
+  never list, read, or delete another's chats.
+- **Migration** — the *first* account to activate inherits any chats that
+  pre-date auth (they had no owner), so an existing install doesn't lose
+  history.
+
 ## Security notes
 
-- Binds to `127.0.0.1` by default. If you expose it on a LAN
-  (`host = "0.0.0.0"` in the TOML), put it behind a reverse proxy with auth —
-  the API has none.
-- Uploaded images are stored with random UUID filenames; the DB stores only
-  filenames, not base64 blobs.
+- Passwords are hashed with `hashlib.scrypt` (a memory-hard KDF) plus a
+  per-password random salt; plaintext is never stored.
+- Sessions are 256-bit random bearer tokens in an `HttpOnly; SameSite=Lax`
+  cookie; activation links are one-shot, hour-bounded tokens.
+- Uploaded images use unguessable UUID filenames; the DB stores only
+  filenames, not base64 blobs. Both `/uploads/*` and all `/api/*` data routes
+  require a signed-in session.
+- Binds to `0.0.0.0` by default (LAN-reachable). Because the app is
+  now authenticated, LAN use is fine; for public exposure, put it behind
+  TLS.
 
 ## License
 

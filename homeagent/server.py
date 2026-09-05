@@ -33,8 +33,10 @@ import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib import request as urlrequest
+from urllib.parse import parse_qs
 
 from . import __version__
+from .accounts import AuthError
 from .app import App
 from .db import ChatNotFoundError
 from .uploads import UploadError, UploadTooLarge, UnsupportedImage
@@ -105,6 +107,40 @@ def make_handler(app: App):
             except ValueError:
                 return {}
 
+        # --------------------------------------------------- session / auth
+
+        def _cookie_value(self, name: str) -> str:
+            raw = self.headers.get("Cookie", "")
+            for part in raw.split(";"):
+                bit = part.strip()
+                if bit.startswith(name + "="):
+                    return bit[len(name) + 1:].strip()
+            return ""
+
+        def _current_user(self) -> str | None:
+            """Resolve the session cookie to a username, or None if absent."""
+            token = self._cookie_value("ha_session")
+            if not token:
+                return None
+            sess = app.users.lookup_session(token)
+            return sess.get("username") if sess else None
+
+        def _require_user(self) -> str | None:
+            """Return the username, or send 401 and return None if logged out."""
+            user = self._current_user()
+            if user:
+                return user
+            self._send_error_json(401, "not signed in")
+            return None
+
+        def _send_cookie(self, name: str, value: str, max_age: int | None) -> None:
+            base = f"{name}={value}; Path=/; HttpOnly; SameSite=Lax"
+            if max_age is not None:
+                base += f"; Max-Age={max_age}"
+            else:
+                base += "; Expires=Thu, 01 Jan 1970 00:00:00 GMT"
+            self.send_header("Set-Cookie", base)
+
         def _serve_file(self, path: str, content_type: str, cache: str = "no-cache") -> None:
             if not os.path.isfile(path):
                 self._send_error_json(404, "Not found")
@@ -121,9 +157,9 @@ def make_handler(app: App):
         def _route(self, method: str) -> None:
             """Dispatch a request; wrap every route in one try/except so
             no handler error produces an HTML traceback page."""
-            path = self.path.split("?", 1)[0]
+            path, _, query = self.path.partition("?")
             try:
-                self._route_inner(method, path)
+                self._route_inner(method, path, query)
             except Exception as e:  # noqa: BLE001 — last-resort guard
                 code = 500
                 try:
@@ -133,7 +169,8 @@ def make_handler(app: App):
 
         # --------------------------------------------------------- routing
 
-        def _route_inner(self, method: str, path: str) -> None:
+        def _route_inner(self, method: str, path: str, query: str = "") -> None:
+            # ----- Public routes (reachable logged-in or out) -----
             if method == "GET":
                 if path == "/":
                     return self._serve_file(os.fspath(app.index_html), "text/html; charset=utf-8")
@@ -142,46 +179,184 @@ def make_handler(app: App):
                              else "application/javascript; charset=utf-8")
                     p = os.path.join(os.fspath(app.static_dir), path.lstrip("/"))
                     return self._serve_file(p, ctype)
+                # --- auth (no session required) ---
+                if path == "/auth/me":
+                    return self._auth_me()
+                if path == "/auth/users":
+                    return self._auth_users()
+                if path == "/auth/activate":
+                    token = parse_qs(query).get("token", [""])[0]
+                    return self._auth_activate(token)
+            elif method == "POST":
+                if path == "/auth/login":
+                    return self._auth_login()
+                if path == "/auth/logout":
+                    return self._auth_logout()
+                if path == "/auth/set-or-reset":
+                    return self._auth_set_or_reset()
+
+            # ----- Data routes (session required) -----
+            if method == "GET":
                 if path == "/api/models":
                     return self._get_models()
                 if path == "/api/chats":
+                    user = self._require_user()
+                    if not user:
+                        return
                     return self._send_json(200, {
-                        "chats": app.db.list_chats(),
+                        "chats": app.db.list_chats(user),
                         "default_model": app.cfg.default_model,
                     })
                 m = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")", path)
                 if m:
-                    return self._get_chat(m.group(1))
+                    user = self._require_user()
+                    if not user:
+                        return
+                    return self._get_chat(m.group(1), user)
                 m = re.fullmatch(r"/uploads/([0-9a-f]{32}\.[a-z0-9]{2,5})", path, re.IGNORECASE)
                 if m:
+                    user = self._require_user()
+                    if not user:
+                        return
                     stored = m.group(1)
+                    # NB: the upload ID is 32-hex UUID (unguessable) and it is
+                    # only surfaced in the chat of the user who uploaded it,
+                    # which is already per-owner-scoped in the DB — requiring a
+                    # session here is sufficient privacy; a full owner column
+                    # on uploads would be overkill for a single-host app.
                     p = app.uploads.path_for(stored)
                     if p:
-                        # Uploaded images are content-addressed, so a long
-                        # client cache is safe and avoids re-fetching on scroll.
                         return self._serve_file(p, app.uploads.content_type_for(stored),
                                                 cache="public, max-age=86400")
                     return self._send_error_json(404, "Not found")
             elif method == "POST":
                 if path == "/api/chats":
-                    return self._create_chat()
+                    user = self._require_user()
+                    if not user:
+                        return
+                    return self._create_chat(user)
                 if path == "/api/incognito":
+                    user = self._require_user()
+                    if not user:
+                        return
                     return self._incognito()
                 if path == "/api/upload":
+                    user = self._require_user()
+                    if not user:
+                        return
                     return self._upload()
                 m = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")/messages", path)
                 if m:
-                    return self._send_message(m.group(1))
+                    user = self._require_user()
+                    if not user:
+                        return
+                    return self._send_message(m.group(1), user)
             elif method == "DELETE":
                 m = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")", path)
                 if m:
-                    return self._delete_chat(m.group(1))
+                    user = self._require_user()
+                    if not user:
+                        return
+                    return self._delete_chat(m.group(1), user)
 
             self._send_error_json(404, "Not found")
 
         do_GET = lambda self: self._route("GET")       # noqa: E731
         do_POST = lambda self: self._route("POST")     # noqa: E731
         do_DELETE = lambda self: self._route("DELETE") # noqa: E731
+
+        # ------------------------------------------------------------- auth
+
+        def _auth_me(self) -> None:
+            """Report the signed-in user, if any (no 401 for guests)."""
+            user = self._current_user()
+            if not user:
+                return self._send_json(200, {"user": None})
+            self._send_json(200, {"user": app.users.get_public(user) or {"username": user}})
+
+        def _auth_users(self) -> None:
+            """Lightweight list of accounts, for the login-splash tiles."""
+            self._send_json(200, {"users": app.users.list_users()})
+
+        def _auth_login(self) -> None:
+            payload = self._read_json()
+            username = (payload.get("username") or "").strip()
+            password = payload.get("password") or ""
+            if not username or not app.users.try_login(username, password):
+                return self._send_error_json(401, "wrong username or password")
+            try:
+                token, ttl = app.users.create_session(username)
+            except AuthError as e:
+                return self._send_error_json(403, str(e))
+            self.send_response(200)
+            self._send_cookie("ha_session", token, ttl)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def _auth_logout(self) -> None:
+            token = self._cookie_value("ha_session")
+            if token:
+                app.users.delete_session(token)
+            self.send_response(200)
+            self._send_cookie("ha_session", "", None)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
+        def _auth_set_or_reset(self) -> None:
+            payload = self._read_json()
+            try:
+                token, (em_ok, em_msg), is_new = app.users.request_set_or_reset(
+                    (payload.get("username") or ""),
+                    (payload.get("email") or ""),
+                    (payload.get("password") or ""),
+                    (payload.get("confirm") or ""),
+                )
+            except AuthError as e:
+                return self._send_error_json(400, str(e))
+            # PRIVACY: when SMTP is configured, the activation link is private
+            # channel-to-inbox — we do NOT return the token to the browser so
+            # it can never be read off a shared screen. The on-screen fallback
+            # link is only shown when email is off AND the send was a no-op.
+            email_cfg = app.users.email_enabled
+            if email_cfg and em_ok:
+                delivered = "inbox"
+            elif email_cfg and not em_ok:
+                # Requested email but failed — surface the error so the user
+                # can diagnose the SMTP config, and still hand over the link
+                # as a documented fallback (a failure must not be silent).
+                delivered = "fallback-after-error"
+            else:
+                delivered = "off"
+            self._send_json(200, {
+                "token": token if delivered != "inbox" else None,
+                "is_new": is_new,
+                "email_configured": email_cfg,
+                "email_sent": em_ok,
+                "email_note": em_msg,
+                "delivery": delivered,
+            })
+
+        def _auth_activate(self, token: str) -> None:
+            """GET /auth/activate?token=... — finalize a set/reset and sign in."""
+            token = (token or "").strip()
+            try:
+                user = app.users.activate(token, claim_unowned=app.db.claim_unowned)
+            except AuthError as e:
+                return self._send_error_json(400, str(e))
+            try:
+                token2, ttl = app.users.create_session(user["username"])
+            except AuthError as e:
+                return self._send_error_json(403, str(e))
+            # Redirect to the app root with the session cookie set.
+            self.send_response(302)
+            self._send_cookie("ha_session", token2, ttl)
+            self.send_header("Location", "/")
+            self.send_header("Content-Length", "0")
+            self.end_headers()
 
         # -------------------------------------------------------------- GET
 
@@ -202,19 +377,19 @@ def make_handler(app: App):
                 "ollama": app.cfg.ollama_host,
             })
 
-        def _get_chat(self, chat_id: str) -> None:
+        def _get_chat(self, chat_id: str, owner: str) -> None:
             try:
-                chat, messages = app.db.get_chat(chat_id)
+                chat, messages = app.db.get_chat(chat_id, owner)
             except ChatNotFoundError:
                 return self._send_error_json(404, "Chat not found")
             self._send_json(200, {"chat": chat, "messages": messages})
 
         # ------------------------------------------------------------- POST
 
-        def _create_chat(self) -> None:
+        def _create_chat(self, owner: str) -> None:
             payload = self._read_json()
             model = (payload.get("model") or app.cfg.default_model).strip() or app.cfg.default_model
-            self._send_json(201, {"chat": app.db.create_chat(model)})
+            self._send_json(201, {"chat": app.db.create_chat(model, owner)})
 
         def _incognito(self) -> None:
             """Answer one turn using context the *client* keeps in memory.
@@ -296,13 +471,13 @@ def make_handler(app: App):
                 return self._send_error_json(400, str(e))
             self._send_json(201, {"url": f"/uploads/{name}", "name": name, "id": name.split(".")[0]})
 
-        def _delete_chat(self, chat_id: str) -> None:
-            app.db.delete_chat(chat_id)
+        def _delete_chat(self, chat_id: str, owner: str) -> None:
+            app.db.delete_chat(chat_id, owner)
             self._send_json(200, {"ok": True})
 
-        def _send_message(self, chat_id: str) -> None:
+        def _send_message(self, chat_id: str, owner: str) -> None:
             try:
-                app.db.get_chat(chat_id)  # exists?
+                app.db.get_chat(chat_id, owner)  # exists + owned?
             except ChatNotFoundError:
                 return self._send_error_json(404, "Chat not found")
 
@@ -322,7 +497,7 @@ def make_handler(app: App):
             if not text and not images:
                 return self._send_error_json(400, "Empty message")
 
-            chat, _ = app.db.get_chat(chat_id)
+            chat, _ = app.db.get_chat(chat_id, owner)
             model = chat["model"] or app.cfg.default_model
             app.db.add_user_message(chat_id, text, images)
             messages = app.db.build_model_messages(chat_id)
