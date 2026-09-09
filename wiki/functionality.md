@@ -17,42 +17,20 @@ Examples: "update the UI" → `ui`. "fix the API" → `api` or `server`. "change
 
 ### homeagent (`homeagent/`)
 
-Owns the whole app. Configuration is a single Python module:
-`homeagent/config.py` exposes a frozen `CONFIG: Config` constant — that is
-the ONE place settings live. No env vars, no TOML, no loader.
-
-Roles:
-- `config.py` — the single config source (`CONFIG` constant; frozen `Config`
-  dataclass). `load_config()` is a back-compat shim that just returns `CONFIG`.
-- `accounts.py` — `UserStore`: users, scrypt-hashed passwords, HTTP sessions,
-  one-shot hour-bounded activation tokens, optional SMTP (465→SMTP_SSL,
-  587/others→STARTTLS). Sets the delivery mode
-  (`inbox` | `fallback-after-error` | `off`) for the activation token.
-- `db.py` — `ChatDatabase`: per-owner chats + messages in MongoDB
-  (pymongo); `claim_unowned(owner)` for the first user to adopt
-  pre-auth data.
-- `ollama.py` — `OllamaClient`: list models, NDJSON `/api/chat` streaming.
-- `uploads.py` — `UploadStore`: multipart image upload, UUID filenames.
-- `app.py` — `App`: the DI facade handed to every request (holds config,
-  db, ollama, uploads, users, static dir).
-- `server.py` — handler factory; auth-public routes (`/`, static,
-  `/auth/*`, `/uploads/*`) + guarded `/api/*` routes. Streams chat
-  responses to the browser.
-- `main.py` — composition root; `build_app(CONFIG)` wires everything;
-  `python -m homeagent.main`.
-- `static/` — UI (`index.html`, `style.css`, `app.js`); the splash tiles
-  + set/reset flow read `d.delivery` to decide whether to show a link.
+Owns `homeagent/`. Describe this module's role here.
 
 Key paths:
-- `homeagent/config.py`            # ONE config file — edit this
+- `homeagent/static/app.js`
+- `homeagent/static/index.html`
+- `homeagent/static/style.css`
+- `homeagent/__init__.py`
 - `homeagent/accounts.py`
+- `homeagent/app.py`
+- `homeagent/config.py`
 - `homeagent/db.py`
 - `homeagent/main.py`
 - `homeagent/ollama.py`
 - `homeagent/server.py`
 - `homeagent/uploads.py`
-- `homeagent/static/app.js`
-- `homeagent/static/index.html`
-- `homeagent/static/style.css`
 
 <!-- reignit:modules:end -->
