@@ -11,8 +11,10 @@ Completed work only — newest first. Active checklist lives in `wiki/current.md
   real env vars > `prod.env` (untracked) > `.env` (tracked template).
   Includes a tiny stdlib env-file parser (supports inline `#` comments,
   quoted values).
-- `.env` (tracked): placeholder template for every setting.
-  `prod.env` (git-ignored): real Gmail creds + LAN Ollama host.
+- **Design (confirmed by user):** the tracked `.env` template STAYS in the
+  repo (I briefly deleted it per a follow-up, then restored it — it is NOT
+  accidental, keep it). `prod.env` (git-ignored) holds the real Gmail creds
+  + LAN Ollama host.
 - `.gitignore`: `prod.env` ignored; `.env` un-ignored via `!.env`.
 - README "Configuration" section rewritten; stale "no env vars" comments
   in `run.sh` and `main.py` updated.
