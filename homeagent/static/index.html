@@ -44,7 +44,7 @@
             <input id="srUser" autocomplete="off" maxlength="40" spellcheck="false">
           </div>
           <div class="auth-field">
-            <label for="srEmail">Email <span class="muted">· account identity &amp; reset link</span></label>
+            <label for="srEmail">Email <span class="muted">· account identity · code arrives here</span></label>
             <input id="srEmail" type="email" autocomplete="email" spellcheck="false">
           </div>
           <div class="auth-field">
@@ -55,20 +55,27 @@
             <label for="srConfirm">Confirm password</label>
             <input id="srConfirm" type="password" autocomplete="new-password">
           </div>
-          <button id="srSubmit" class="btn primary" type="button">Request activation link</button>
+          <button id="srSubmit" class="btn primary" type="button">Email me a verification code</button>
           <p id="srErr" class="auth-err" hidden></p>
 
           <div id="srDone" hidden style="margin-top:16px;background:var(--panel2);padding:14px;border-radius:10px">
-            <!-- On-screen link: shown ONLY as a fallback (email off, or a
-                 documented error). When the link went to the inbox it is
-                 hidden and its token is not returned by the server. -->
-            <div id="srLinkWrap" hidden>
-              <p id="srLinkHint" style="margin:0 0 8px;font-size:13px"></p>
-              <label style="font-size:12px;color:var(--dim)">One-time activation link (copy &amp; open):</label>
-              <input id="srLink" readonly style="width:100%;box-sizing:border-box;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;font:13px/1.4 var(--mono)">
+            <!-- Verification code box — always visible on this page after the
+                 code is requested. When the email is delivered the server
+                 does NOT return the code (anti-shoulder-surfing); the inbox
+                 still wins, and the box below is where you type it in. When
+                 email is off or the send failed, the code is pre-filled here
+                 as an anti-lockout fallback. -->
+            <div id="srCodeWrap">
+              <p id="srCodeHint" style="margin:0 0 8px;font-size:13px"></p>
+              <div class="auth-field">
+                <label for="srCode">Verification code</label>
+                <input id="srCode" autocomplete="off" maxlength="6" spellcheck="false"
+                       style="font:700 18px/1.4 var(--mono);letter-spacing:6px;text-transform:uppercase;text-align:center">
+              </div>
+              <button id="srVerify" class="btn primary" type="button">Verify &amp; finish</button>
+              <p id="srCodeErr" class="auth-err" hidden></p>
             </div>
             <p id="srEmailNote" class="auth-sub" style="margin-top:8px"></p>
-            <a href="#login" class="auth-sublink" style="margin-top:12px;display:inline-block">← Back to sign in</a>
           </div>
         </div>
       </div>

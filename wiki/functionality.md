@@ -11,6 +11,17 @@ A self-hosted web chat UI for [Ollama](https://ollama.com) models running on you
 Match the user's request to a module below, then open only that module's paths.
 Examples: "update the UI" → `ui`. "fix the API" → `api` or `server`. "change the schema" → `db` / `models`.
 
+## Auth flow (current)
+
+- Sign-in: username tile + password → `POST /auth/login` → `Ha_session` cookie.
+- **Set/reset password (no link):** four fields → server stores pending
+  password + 6-char verification code (1 h TTL, one-shot) → code emailed →
+  user enters it on the page → `POST /auth/verify-code` → cookie set, reload.
+  Code shown on-screen **only** if email is off or the send failed (anti-lockout).
+- `accounts.py` = UserStore (users/sessions/`activations` collections,
+  scrypt passwords, code generation, best-effort SMTP).
+- `db.py::claim_unowned` migrates pre-auth chats to the first account on verify.
+
 ## Modules
 
 <!-- reignit:modules:start -->

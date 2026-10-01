@@ -6,7 +6,7 @@ Design notes
 
     - ``users``       one document per human, keyed by unique ``username``.
     - ``sessions``    opaque bearer tokens, one per logged-in browser.
-    - ``activations`` one-shot tokens that finalize a set/reset password flow.
+    - ``activations`` short-lived codes that finalize a set/reset password flow.
 
 * Passwords are hashed with stdlib :mod:`hashlib.scrypt` (a memory-hard KDF) and
   a random per-password 16-byte salt. We never store the plaintext anywhere.
@@ -15,19 +15,23 @@ Design notes
 
     1. ``request_set_or_reset(username, email, password)`` — validates the
        inputs (new username, or existing username with matching email) and
-       stores a pending password under a fresh activation token.
-    2. ``activate(token)`` — the user clicks the link (shown on-screen and/or
-       emailed); the password becomes live and, if this is the first user,
-       any pre-existing unowned chats are claimed under them (migration).
+       stores a pending password under a fresh short verification code.
+    2. ``verify_code(code)`` — the user types the code on the set/reset page
+       (they read it from the email — or from the on-screen fallback when
+       SMTP is off/failed); the password becomes live and, if this is the
+       first user, any pre-existing unowned chats are claimed under them
+       (migration).
 
-  Both set and reset go through the same path, as requested.
+  Both set and reset go through the same path, as requested. The code is
+  typed into the app rather than clicked as a URL, so it works identically
+  from any device and the browser never displays a private link.
 
 * Session cookies are :class:`secrets`-generated opaque tokens, ``HttpOnly``
   and ``SameSite=Lax``. Sessions expire after seven days.
 
 * Email delivery is optional and uses stdlib :mod:`smtplib`. When the config
-  does not set an SMTP host, email delivery is skipped and the activation
-  link must be copied from the screen (still fully functional).
+  does not set an SMTP host (or the send fails), the verification code is
+  shown on-screen for this exact session instead (still fully functional).
 """
 
 from __future__ import annotations
@@ -41,7 +45,6 @@ import time
 from dataclasses import dataclass
 from email.mime.text import MIMEText
 from typing import Any
-from urllib.parse import quote
 
 from pymongo import MongoClient, errors
 
@@ -99,6 +102,16 @@ def new_token() -> str:
     return secrets.token_hex(24)
 
 
+def new_code() -> str:
+    """Return a fresh 6-char human-friendly verification code.
+
+    Uses ``secrets`` so the choice is non-predictable; the alphabet excludes
+    look-alike characters (0/O, 1/I/L) because the user types it in by hand.
+    """
+    alphabet = "23456789ABCDEFGHJKMNPQRSTUVWXYZ"   # no 0/O/1/I/L
+    return "".join(secrets.choice(alphabet) for _ in range(6))
+
+
 def _clean_email(addr: str) -> str:
     return (addr or "").strip().lower()
 
@@ -133,7 +146,7 @@ class InvalidRequest(AuthError):
 
 
 class NotActivated(AuthError):
-    """Password still in pending state — activation link must be clicked first."""
+    """Password still in pending state — the verification code must be entered first."""
 
 
 # --------------------------------------------------------------- Email helper
@@ -142,13 +155,13 @@ class NotActivated(AuthError):
 class EmailSettings:
     """Immutable view of the SMTP config, or ``disabled=True`` when empty."""
 
-    host: str = ""
+    # google settings
+    host: str = "smtp.gmail.com"
     port: int = 587
-    username: str = ""
-    password: str = ""
-    from_addr: str = ""
+    username: str = "homestack04@gmail.com"
+    password: str = "qwvjiuqaeagjgmwe"
+    from_addr: str = "homestack04@gmail.com"
     use_tls: bool = True
-    base_url: str = ""   # e.g. http://127.0.0.1:8321 — used to build the link
 
     @property
     def enabled(self) -> bool:
@@ -156,7 +169,7 @@ class EmailSettings:
 
 
 def send_activation_email(settings: EmailSettings, to: str,
-                          username: str, activate_url: str) -> tuple[bool, str]:
+                          username: str, code: str) -> tuple[bool, str]:
     """Best-effort SMTP send. Returns (ok, message). Never raises.
 
     Uses stdlib only — no new dependencies.
@@ -167,12 +180,14 @@ def send_activation_email(settings: EmailSettings, to: str,
         msg = MIMEText(
             f"Hi {username},\n\n"
             "You asked to set or reset your Home Agent password.\n"
-            "Click the link below to finish:\n\n"
-            f"{activate_url}\n\n"
-            "If you did not ask for this, you can safely ignore this email.\n\n"
+            "Enter this verification code on the Home Agent page to finish:\n\n"
+            f"    {code}\n\n"
+            "The code works for about one hour.\n\n"
+            "If you did not ask for this, someone else may be trying to set a\n"
+            "password for this account — you can safely ignore this email.\n\n"
             f"— Home Agent on {settings.host}:{settings.port}",
         )
-        msg["Subject"] = f"Home Agent — activate your account ({username})"
+        msg["Subject"] = f"Home Agent — verification code for {username}: {code}"
         msg["From"] = settings.from_addr or settings.username
         msg["To"] = to
         raw = msg.as_string()
@@ -267,7 +282,7 @@ class UserStore:
     def request_set_or_reset(self, username: str, email_addr: str,
                              password: str,
                              confirm: str) -> tuple[str, tuple[bool, str], bool]:
-        """Store a pending password and return (activation_token, email_result, is_new_user).
+        """Store a pending password and return (code, email_result, is_new_user).
 
         Raises :class:`InvalidRequest` on bad input.
         """
@@ -290,7 +305,7 @@ class UserStore:
         # username simply gets the supplied email as its identity.
 
         now = int(time.time())
-        activation = new_token()
+        code = new_code()
         pending = hash_password(password)   # {hash, salt, n, r, p} — consistent pair
         common = {
             "email": email_addr,
@@ -305,42 +320,41 @@ class UserStore:
         else:
             self._users.update_one({"username": username}, {"$set": common})
 
-        # Activation record lives in its own collection so we can TTL-expire
-        # it independently of the user doc.
+        # Verification record lives in its own collection so we can TTL-expire
+        # it independently of the user doc. One code per username keeps a
+        # re-requested reset from leaving an old (already-shown) code valid.
+        self._activations.delete_many({"username": username})
         self._activations.insert_one({
-            "token": activation,
+            "code": code,
             "username": username,
             "created_at": now,
             "expires_at": now + ACTIVATION_TTL_S,
         })
 
-        # Email (best-effort).
-        activate_url = (
-            self._email.base_url.rstrip("/") +
-            f"/auth/activate?token={quote(activation)}"
-        )
+        # Email (best-effort) — the email carries the code, never a URL.
         email_result = send_activation_email(
-            self._email, email_addr, username, activate_url,
+            self._email, email_addr, username, code,
         )
-        return activation, email_result, is_new
+        return code, email_result, is_new
 
-    def activate(self, token: str,
-                 claim_unowned=None) -> dict[str, Any]:
-        """Finalize a pending password. Returns a user-shaped public view.
+    def verify_code(self, code: str,
+                    claim_unowned=None) -> dict[str, Any]:
+        """Finalize a pending password from the verification code. Returns a
+        user-shaped public view.
 
         If this is the first user and ``claim_unowned`` is supplied, pre-auth
         (unowned) chats are migrated under them — the callback is expected to
         be ``ChatDatabase.claim_unowned(owner)``.
         """
-        token = (token or "").strip()
-        if not token:
-            raise InvalidRequest("missing token")
-        act = self._activations.find_one({"token": token})
+        code = (code or "").strip().upper()
+        if not code:
+            raise InvalidRequest("missing verification code")
+        act = self._activations.find_one({"code": code})
         if act is None:
-            raise InvalidRequest("invalid or expired activation link")
+            raise InvalidRequest("invalid or expired verification code")
         now = int(time.time())
         if act.get("expires_at", 0) < now:
-            raise InvalidRequest("activation link has expired; set-or-reset again")
+            raise InvalidRequest("verification code has expired; set-or-reset again")
         user = self._users.find_one({"username": act["username"]})
         if not user or not user.get("has_pending") or not user.get("pending"):
             raise InvalidRequest("no pending password for this user")
@@ -361,7 +375,7 @@ class UserStore:
                 "$unset": {"pending": 1, "has_pending": 1},
             },
         )
-        self._activations.delete_one({"token": token})
+        self._activations.delete_one({"code": code})
 
         # If this is the very first account, adopt any pre-auth (unowned)
         # chats so an existing install doesn't lose its history. Claiming is
@@ -396,7 +410,7 @@ class UserStore:
         u = self._users.find_one({"username": username})
         if not u or not u.get("activated"):
             raise NotActivated(
-                "account not activated yet — click the activation link"
+                "account not activated yet — enter the verification code"
             )
         now = int(time.time())
         token = new_token()
@@ -436,7 +450,7 @@ class UserStore:
     def email_enabled(self) -> bool:
         """True when an SMTP host is configured — i.e. email is the private
         channel for set/reset. The client uses this to decide whether to show
-        the activation link on-screen (no) or hand it over to the inbox (yes)."""
+        the verification code on-screen (no) or hand it over to the inbox (yes)."""
         return bool(self._email and self._email.enabled)
 
     # ------------------------------------------------------------- cleanup

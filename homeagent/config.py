@@ -33,7 +33,7 @@ class Config:
     upload_dir: str
     max_image_mb: int
 
-    # email  (host = "" disables sending; the activation link then shows on-screen)
+    # email  (host = "" disables sending; the verification code then shows on-screen)
     email_host: str
     email_port: int
     email_username: str
@@ -71,9 +71,9 @@ CONFIG: Config = Config(
     # -- email (single source; no toml) -------------------------------------
     email_host="smtp.gmail.com",                 # "" = disable (on-screen fallback)
     email_port=587,                              # 587 = STARTTLS, 465 = implicit TLS
-    email_username="thisisfornetflix1978@gmail.com",
-    email_password="GoogLig2050",
-    email_from="thisisfornetflix1978@gmail.com",
+    email_username="homestack04@gmail.com",
+    email_password="qwvjiuqaeagjgmwe",
+    email_from="homestack04@gmail.com",
     email_use_tls=True,
 )
 

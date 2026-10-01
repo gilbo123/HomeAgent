@@ -33,7 +33,6 @@ import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib import request as urlrequest
-from urllib.parse import parse_qs
 
 from . import __version__
 from .accounts import AuthError
@@ -157,9 +156,9 @@ def make_handler(app: App):
         def _route(self, method: str) -> None:
             """Dispatch a request; wrap every route in one try/except so
             no handler error produces an HTML traceback page."""
-            path, _, query = self.path.partition("?")
+            path = self.path.partition("?")[0]
             try:
-                self._route_inner(method, path, query)
+                self._route_inner(method, path)
             except Exception as e:  # noqa: BLE001 — last-resort guard
                 code = 500
                 try:
@@ -184,9 +183,6 @@ def make_handler(app: App):
                     return self._auth_me()
                 if path == "/auth/users":
                     return self._auth_users()
-                if path == "/auth/activate":
-                    token = parse_qs(query).get("token", [""])[0]
-                    return self._auth_activate(token)
             elif method == "POST":
                 if path == "/auth/login":
                     return self._auth_login()
@@ -194,6 +190,8 @@ def make_handler(app: App):
                     return self._auth_logout()
                 if path == "/auth/set-or-reset":
                     return self._auth_set_or_reset()
+                if path == "/auth/verify-code":
+                    return self._auth_verify_code()
 
             # ----- Data routes (session required) -----
             if method == "GET":
@@ -309,7 +307,7 @@ def make_handler(app: App):
         def _auth_set_or_reset(self) -> None:
             payload = self._read_json()
             try:
-                token, (em_ok, em_msg), is_new = app.users.request_set_or_reset(
+                code, (em_ok, em_msg), is_new = app.users.request_set_or_reset(
                     (payload.get("username") or ""),
                     (payload.get("email") or ""),
                     (payload.get("password") or ""),
@@ -317,22 +315,22 @@ def make_handler(app: App):
                 )
             except AuthError as e:
                 return self._send_error_json(400, str(e))
-            # PRIVACY: when SMTP is configured, the activation link is private
-            # channel-to-inbox — we do NOT return the token to the browser so
-            # it can never be read off a shared screen. The on-screen fallback
-            # link is only shown when email is off AND the send was a no-op.
+            # PRIVACY: when SMTP is configured and the send succeeded, the code
+            # lives in the inbox — we do NOT return it to the browser so it can
+            # never be read off a shared screen. The on-screen fallback code is
+            # only handed over when email is off OR the send failed.
             email_cfg = app.users.email_enabled
             if email_cfg and em_ok:
                 delivered = "inbox"
             elif email_cfg and not em_ok:
                 # Requested email but failed — surface the error so the user
-                # can diagnose the SMTP config, and still hand over the link
+                # can diagnose the SMTP config, and still hand over the code
                 # as a documented fallback (a failure must not be silent).
                 delivered = "fallback-after-error"
             else:
                 delivered = "off"
             self._send_json(200, {
-                "token": token if delivered != "inbox" else None,
+                "code": code if delivered != "inbox" else None,
                 "is_new": is_new,
                 "email_configured": email_cfg,
                 "email_sent": em_ok,
@@ -340,23 +338,32 @@ def make_handler(app: App):
                 "delivery": delivered,
             })
 
-        def _auth_activate(self, token: str) -> None:
-            """GET /auth/activate?token=... — finalize a set/reset and sign in."""
-            token = (token or "").strip()
+        def _auth_verify_code(self) -> None:
+            """POST /auth/verify-code — finalize a set/reset and sign in.
+
+            Body: ``{"code": "A2B3C4"}``. The code was delivered by email (or
+            shown on-screen as the documented fallback), so no private link is
+            ever displayed to the browser. On success the session cookie is
+            set and the client redirects to ``/``.
+            """
+            payload = self._read_json()
             try:
-                user = app.users.activate(token, claim_unowned=app.db.claim_unowned)
+                user = app.users.verify_code(
+                    (payload.get("code") or "").strip(),
+                    claim_unowned=app.db.claim_unowned,
+                )
             except AuthError as e:
                 return self._send_error_json(400, str(e))
             try:
                 token2, ttl = app.users.create_session(user["username"])
             except AuthError as e:
                 return self._send_error_json(403, str(e))
-            # Redirect to the app root with the session cookie set.
-            self.send_response(302)
+            self.send_response(200)
             self._send_cookie("ha_session", token2, ttl)
-            self.send_header("Location", "/")
-            self.send_header("Content-Length", "0")
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
             self.end_headers()
+            self.wfile.write(b"{}")
 
         # -------------------------------------------------------------- GET
 
