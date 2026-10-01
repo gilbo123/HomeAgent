@@ -2,6 +2,25 @@
 
 Completed work only — newest first. Active checklist lives in `wiki/current.md`.
 
+### 2026-10-01 — Secrets out of code, into `prod.env`
+- Gmail SMTP credentials were hardcoded in **two** tracked files
+  (`homeagent/config.py` and `EmailSettings` defaults in `homeagent/accounts.py`)
+  — now removed entirely; verified with `git grep` that no credential remains
+  in tracked sources.
+- `homeagent/config.py` now resolves all CONFIG values at import time:
+  real env vars > `prod.env` (untracked) > `.env` (tracked template).
+  Includes a tiny stdlib env-file parser (supports inline `#` comments,
+  quoted values).
+- `.env` (tracked): placeholder template for every setting.
+  `prod.env` (git-ignored): real Gmail creds + LAN Ollama host.
+- `.gitignore`: `prod.env` ignored; `.env` un-ignored via `!.env`.
+- README "Configuration" section rewritten; stale "no env vars" comments
+  in `run.sh` and `main.py` updated.
+- Verified: real values load from `prod.env`; without it, safe template
+  defaults apply (SMTP shows on-screen fallback); real env vars always win.
+- Note: your development shell exports `OLLAMA_HOST=192.168.1.200:11434`
+  itself, which overrides both env files by design.
+
 ### 2026-09-26 — Send button no longer red at rest
 - `enterApp()` called `setSend(false)` — the red "stop working" state — on
   startup, so the send button looked like STOP with an empty input.

@@ -5,8 +5,8 @@
 #   ./run.sh                # starts the app
 #   ./run.sh <extra-args>   # extra args pass through to the app
 #
-# All runtime settings live in homeagent/config.py (a frozen CONFIG
-# constant). No config file, no environment variables.
+# All runtime settings are read by homeagent/config.py from the tracked
+# .env template and the untracked prod.env secrets file (see README).
 # ============================================================================
 set -euo pipefail
 cd "$(dirname "$0")"
@@ -35,7 +35,7 @@ if ! "$PY" -c 'import pymongo' 2>/dev/null; then
 fi
 
 # Friendly warning (non-fatal) if Ollama isn't reachable.
-# Host is read from homeagent/config.py, not from the environment.
+# Host comes from homeagent/config.py (which itself reads .env / prod.env).
 OLLAMA_HOST="$("$PY" -c '
 import sys
 sys.path.insert(0, ".")

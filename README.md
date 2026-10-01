@@ -33,8 +33,9 @@ professional single-page interface — no cloud, zero pip installs.
   prompts aren't clipped.
 - **Single script** — `./run.sh` and you're done.
 - **Modular, DI-based code** — small single-responsibility modules, a frozen
-  `Config` dataclass, and a composition root. **No environment variables** —
-  all configuration lives in a single Python module (`homeagent/config.py`).
+  `Config` dataclass, and a composition root.
+- **No secrets in code** — credentials live in an untracked `prod.env` file;
+  a placeholder template is provided in the tracked `.env`.
 
 ## Requirements
 
@@ -54,42 +55,51 @@ Ollama is reachable and warns if it isn't.
 
 ## Configuration
 
-**All** settings live in a single Python module —
-[`homeagent/config.py`](homeagent/config.py) — and there are *no* environment
-variables anywhere. Change a value there and restart; done. There is no
-second file and no env-var fallback to keep in sync with.
+**All** settings are read by [`homeagent/config.py`](homeagent/config.py)
+from environment-style files, resolved in this priority order (highest
+first):
 
-```python
-# homeagent/config.py
-CONFIG = Config(
-    host="0.0.0.0",                          # bind address
-    port=8321,                               # listen port
-    open_browser=False,                      # auto-open the UI on start
+1. real process environment variables,
+2. `prod.env` in the project root — **untracked**, put your *secrets* here,
+3. `.env` in the project root — the **tracked** template with safe
+   placeholder values.
 
-    ollama_host="http://192.168.1.200:11434",# Ollama endpoint
-    default_model="qwen3.8:27b",             # default model for new chats
-    temperature=0.7,                         # sampling temperature
-    history_limit=60,                        # context messages per turn
+Neither file is required: without them the app still runs with safe
+defaults (SMTP disabled, local MongoDB). The full set of keys:
 
-    mongo_uri="mongodb://127.0.0.1:27017/",  # MongoDB connection string
-    mongo_db="homeagent",                    # database name
-    upload_dir="/tmp/homeagent/uploads",     # directory for uploaded images
-    max_image_mb=20,                         # per-image upload size limit (MB)
+```ini
+# server
+HOST=0.0.0.0            # bind address; 127.0.0.1 for localhost-only
+PORT=8321               # listen port
+OPEN_BROWSER=false      # auto-open the UI on startup
 
-    # Optional SMTP for password set/reset verification codes. When
-    # email_username is empty sending is disabled and the code is shown
-    # on-screen (still works end-to-end).
-    email_host="smtp.gmail.com",
-    email_port=587,
-    email_username="you@gmail.com",          # e.g. an app-specific Gmail
-    email_password="app-password…",       # e.g. a Gmail App Password
-    email_from="you@gmail.com",              # default: email_username
-    email_use_tls=True,                      # 587→STARTTLS, 465→SMTP_SSL
-)
+# ollama
+OLLAMA_HOST=http://127.0.0.1:11434   # Ollama endpoint
+DEFAULT_MODEL=qwen3.8:27b            # default model for new chats
+TEMPERATURE=0.7                      # sampling temperature
+HISTORY_LIMIT=60                     # context messages per turn
+THINKING=true                        # enable thinking mode when supported
+
+# storage
+MONGO_URI=mongodb://127.0.0.1:27017/ # MongoDB connection string
+MONGO_DB=homeagent                   # database name
+UPLOAD_DIR=/tmp/homeagent/uploads    # directory for uploaded images
+MAX_IMAGE_MB=20                      # per-image upload size limit (MB)
+
+# email — optional SMTP for password set/reset verification codes.
+# When EMAIL_HOST is empty, sending is disabled and the code is shown
+# on-screen instead (the flow still works end-to-end).
+EMAIL_HOST=smtp.gmail.com            # "" = disable
+EMAIL_PORT=587                       # 587→STARTTLS, 465→SMTP_SSL
+EMAIL_USERNAME=you@gmail.com         # e.g. an app-specific Gmail
+EMAIL_PASSWORD=your-gma…word # e.g. a Gmail App Password
+EMAIL_FROM=you@gmail.com             # default: EMAIL_USERNAME
+EMAIL_USE_TLS=true
 ```
 
-> The app's own config is a Python constant, not a file you parse. Edit it
-> and `./run.sh` picks it up on the next start.
+> **Never commit real credentials.** Copy your secrets into `prod.env`
+> (it is git-ignored; the tracked `.env` holds placeholders only), then
+> `./run.sh` picks them up on the next start.
 
 ## Architecture
 
@@ -98,7 +108,7 @@ homeagent/
 ├── __init__.py    # version + package docstring
 ├── app.py         # App facade — the DI object handed to every request
 ├── accounts.py    # UserStore (profiles, sessions, activation, optional SMTP)
-├── config.py      # frozen Config dataclass + CONFIG constant (one file)
+├── config.py      # frozen Config dataclass — values come from .env / prod.env
 ├── db.py          # ChatDatabase (MongoDB: per-owner chats + messages)
 ├── ollama.py      # OllamaClient (list models, NDJSON chat streaming)
 ├── server.py      # HTTP handler factory (auth + data routes, streams, uploads)
@@ -117,8 +127,10 @@ Each module does one job and receives its dependencies explicitly:
 |-----------------------|--------------------------------------------|
 | `homeagent/`          | The application package (see above)        |
 | `homeagent/static/`   | The web UI: `index.html`, `style.css`, `app.js` |
-| `homeagent/config.py` | All runtime configuration (the only knob)  |
-| `run.sh`              | Launcher with Ollama health check          |
+| `homeagent/config.py` | Reads runtime configuration from env files     |
+| `.env`                | Tracked configuration template (placeholders)  |
+| `prod.env`            | Untracked secrets (git-ignored, not in repo)   |
+| `run.sh`              | Launcher with Ollama health check              |
 | `~/.virtualenvs/chat` | Python env with `pymongo` (auto-detected)  |
 | `/tmp/homeagent/`     | Upload dir + logs (created on first run)   |
 
