@@ -1,7 +1,13 @@
 """Configuration for Home Agent — this file is the ONE place settings live.
 
-Edit the values below, restart the app. There is no other config file,
-no env vars, no TOML. If you want a different value, change it here.
+Values are resolved at import time from (highest priority first):
+
+1. real process environment variables,
+2. ``prod.env`` in the project root  (untracked — holds *secrets*),
+3. ``.env`` in the project root      (tracked — example/default template).
+
+Neither env file needs to exist: safe defaults apply (SMTP disabled, local
+MongoDB). To change a value, set it in ``prod.env`` (or export it).
 """
 
 from __future__ import annotations
@@ -42,39 +48,87 @@ class Config:
     email_use_tls: bool
 
 
-# ============================================================================
-# THE CONFIG — edit these values, that's it.
-# ============================================================================
 _HERE = os.path.abspath(os.path.dirname(__file__))          # .../homeagent
 _ROOT = os.path.dirname(_HERE)                               # project root
 
+
+def _load_env_file(path: str) -> dict[str, str]:
+    """Parse a ``KEY=VALUE`` env file. Missing file / bad lines are ignored."""
+    values: dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip()
+                if not key:
+                    continue
+                # Allow `KEY=VALUE`, `KEY="VALUE"`, `KEY='VALUE'`, `export KEY=VALUE`
+                value = value.strip()
+                if value[:1] not in ('"', "'"):
+                    # unquoted: strip inline comment  (KEY=8321  # listen port)
+                    hash_pos = value.find(" #")
+                    if hash_pos != -1:
+                        value = value[:hash_pos].rstrip()
+                elif value[-1:] == value[:1] and len(value) >= 2:
+                    value = value[1:-1]
+                values[key] = value
+    except FileNotFoundError:
+        pass
+    return values
+
+
+def _install_env_files() -> None:
+    """Merge env files into os.environ.
+
+    ``prod.env`` is loaded first (untracked, holds real values) and then
+    ``.env`` (tracked template) only fills keys ``prod.env`` left unset.
+    ``setdefault`` keeps real environment variables winning over both.
+    """
+    for name in ("prod.env", ".env"):
+        for key, value in _load_env_file(os.path.join(_ROOT, name)).items():
+            os.environ.setdefault(key, value)
+
+
+def _env(name: str, default: str) -> str:
+    return os.environ.get(name, default)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    return _env(name, "true" if default else "false").lower() in ("1", "true", "yes", "on")
+
+
+_install_env_files()
+
 CONFIG: Config = Config(
     # -- server -------------------------------------------------------------
-    host="0.0.0.0",                              # bind address; 127.0.0.1 for localhost-only
-    port=8321,                                   # listen port
-    open_browser=False,                          # auto-open the UI on startup
+    host=_env("HOST", "0.0.0.0"),                # bind address; 127.0.0.1 for localhost-only
+    port=int(_env("PORT", "8321")),              # listen port
+    open_browser=_env_bool("OPEN_BROWSER", False),  # auto-open the UI on startup
 
     # -- ollama -------------------------------------------------------------
-    ollama_host="http://192.168.1.200:11434",    # base URL of the Ollama server
-    default_model="qwen3.8:27b",                 # default model for new chats
-    temperature=0.7,                             # sampling temperature
-    history_limit=60,                            # max turns of context sent to the model
-    thinking=True,                               # enable thinking mode when the model supports it
+    ollama_host=_env("OLLAMA_HOST", "http://127.0.0.1:11434"),  # base URL of the Ollama server
+    default_model=_env("DEFAULT_MODEL", "qwen3.8:27b"),         # default model for new chats
+    temperature=float(_env("TEMPERATURE", "0.7")),              # sampling temperature
+    history_limit=int(_env("HISTORY_LIMIT", "60")),             # max context turns
+    thinking=_env_bool("THINKING", True),                       # model thinking mode
 
     # -- storage ------------------------------------------------------------
     static_dir=os.path.join(_HERE, "static"),    # bundled web UI
-    mongo_uri="mongodb://127.0.0.1:27017/",      # MongoDB connection string
-    mongo_db="homeagent",                        # db name for chats/sessions/users
-    upload_dir="/tmp/homeagent/uploads",         # where uploaded images are stored
-    max_image_mb=20,                             # per-image upload cap
+    mongo_uri=_env("MONGO_URI", "mongodb://127.0.0.1:27017/"),  # connection string (no hardcoded creds)
+    mongo_db=_env("MONGO_DB", "homeagent"),      # db name for chats/sessions/users
+    upload_dir=_env("UPLOAD_DIR", "/tmp/homeagent/uploads"),     # upload images
+    max_image_mb=int(_env("MAX_IMAGE_MB", "20")),                # per-image upload cap
 
-    # -- email (single source; no toml) -------------------------------------
-    email_host="smtp.gmail.com",                 # "" = disable (on-screen fallback)
-    email_port=587,                              # 587 = STARTTLS, 465 = implicit TLS
-    email_username="homestack04@gmail.com",
-    email_password="qwvjiuqaeagjgmwe",
-    email_from="homestack04@gmail.com",
-    email_use_tls=True,
+    # -- email (credentials come from prod.env, never from code) ------------
+    email_host=_env("EMAIL_HOST", ""),           # "" = disable (on-screen fallback)
+    email_port=int(_env("EMAIL_PORT", "587")),   # 587 = STARTTLS, 465 = implicit TLS
+    email_username=_env("EMAIL_USERNAME", ""),
+    email_password=_env("EMAIL_PASSWORD", ""),
+    email_from=_env("EMAIL_FROM", ""),
+    email_use_tls=_env_bool("EMAIL_USE_TLS", True),
 )
 
 

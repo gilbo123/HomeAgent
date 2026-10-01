@@ -153,7 +153,9 @@ activemq-data/
 *.sage.py
 
 # Environments
-.env
+.env        # the tracked example template IS committed:
+!.env       #   it holds placeholders only; secrets live in prod.env (ignored)
+prod.env
 .envrc
 .venv
 env/

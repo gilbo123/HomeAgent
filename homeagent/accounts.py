@@ -155,12 +155,13 @@ class NotActivated(AuthError):
 class EmailSettings:
     """Immutable view of the SMTP config, or ``disabled=True`` when empty."""
 
-    # google settings
-    host: str = "smtp.gmail.com"
+    # All values are injected from homeagent.config (which reads prod.env).
+    # Defaults are empty = SMTP disabled, so no credentials live in code.
+    host: str = ""
     port: int = 587
-    username: str = "homestack04@gmail.com"
-    password: str = "qwvjiuqaeagjgmwe"
-    from_addr: str = "homestack04@gmail.com"
+    username: str = ""
+    password: str = ""
+    from_addr: str = ""
     use_tls: bool = True
 
     @property

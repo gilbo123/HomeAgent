@@ -10,9 +10,9 @@ injection):
 Nothing else in the package knows about the others' construction —
 each collaborator receives exactly the dependencies it needs.
 
-Configuration lives in a single place: homeagent/config.py (the CONFIG
-constant). There is no other config file and no env vars. Edit that
-one file and restart.
+Configuration is read by homeagent/config.py from env files: the tracked
+.env template plus the untracked prod.env secrets file (real environment
+variables override both). See the README "Configuration" section.
 
 Run directly:  ``python -m homeagent.main``
 """
@@ -101,8 +101,7 @@ def main(argv: list[str] | None = None) -> int:
     nothing to point at — CONFIG in homeagent/config.py is the source.
     """
     parser = argparse.ArgumentParser(prog="homeagent", description=__doc__)
-    # Intentionally no --config flag: there is exactly one config file
-    # (homeagent/config.py) and it is a Python constant.
+    # Intentionally no --config flag: settings come from .env / prod.env.
     parser.parse_args(argv)
 
     logging.basicConfig(
