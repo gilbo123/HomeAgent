@@ -437,11 +437,11 @@ const $auth    = $("auth"),
 function err(el, msg){ el.textContent = msg || ""; el.hidden = !msg; }
 function showLoginView(){
   $loginV.hidden = false; $resetV.hidden = true; $auth.hidden = false;
-  $("srDone").hidden = true; err($("srErr"), "");
+  $("srDone").hidden = true; err($("srErr"), ""); err($("srCodeErr"), "");
 }
 function showResetView(){
   $loginV.hidden = true; $resetV.hidden = false; $auth.hidden = false;
-  err($("srErr"), "");
+  err($("srErr"), ""); err($("srCodeErr"), "");
 }
 function pickTile(username){
   selUser = username;
@@ -484,7 +484,7 @@ async function submitSetReset(){
   if (!username || !email){ err($("srErr"), "Fill in username and email"); return; }
   if (password.length < 8){ err($("srErr"), "Password must be at least 8 characters"); return; }
   if (password !== confirm){ err($("srErr"), "Passwords do not match"); return; }
-  err($("srErr"), "");
+  err($("srErr"), ""); err($("srCodeErr"), "");
   try {
     const r = await fetch("/auth/set-or-reset", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -492,30 +492,44 @@ async function submitSetReset(){
     });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || "request failed");
-    // PRIVACY: only ever render the link when the server explicitly hands it
-    // over (email disabled, or a documented error fallback). When it went to
-    // the inbox we never received the token, so there is nothing to show.
-    const box = $("srDone"), linkInput = $("srLink"),
-          linkWrap = $("srLinkWrap"), linkHint = $("srLinkHint"),
+    // The code box stays visible on this page in every case — that's where
+    // you type it in. The *code itself* is only pre-filled when the server
+    // hands it over (email off or send failed — the anti-lockout fallback);
+    // when it went to the inbox the browser never sees it, so you read it
+    // from the email and type it into the box below.
+    const box = $("srDone"), codeInput = $("srCode"),
+          codeWrap = $("srCodeWrap"), codeHint = $("srCodeHint"),
           note = $("srEmailNote");
+    codeInput.value = "";
+    codeWrap.hidden = false;   // keep the box on the page, in every case
     if (d.delivery === "inbox") {
-      linkWrap.hidden = true;   // no on-screen link — it's in the inbox
-      note.textContent = "Activation link sent to " + email +
-        " — open it to finish your " + (d.is_new ? "setup" : "password reset") + ".";
+      codeHint.textContent = "Code sent to " + email +
+        " — pull it up from the inbox on any device, then type it into the " +
+        "box below.";
     } else if (d.delivery === "fallback-after-error") {
-      linkWrap.hidden = false;
-      linkHint.textContent = "⚠ Email failed (" + (d.email_note || "send error") +
-        ") — use this one-time link, then fix the SMTP config.";
-      linkInput.value = location.origin + "/auth/activate?token=" + encodeURIComponent(d.token);
-      note.textContent = "This link works for about an hour and from any device. Finish now, or fix email for a private next time.";
+      codeHint.textContent = "⚠ Email failed (" + (d.email_note || "send error") +
+        ") — the code is pre-filled for you here. Fix the SMTP config next time.";
+      codeInput.value = d.code;  // shown for this session only (anti-lockout)
     } else { // delivery === "off" (SMTP not configured)
-      linkWrap.hidden = false;
-      linkHint.textContent = "⚠ Email is not configured, so the link is shown on this screen only. Anyone who can see or reach this browser could finish the reset.";
-      linkInput.value = location.origin + "/auth/activate?token=" + encodeURIComponent(d.token);
-      note.textContent = "Finish in this browser now, or set email_host in homeagent/config.py for a private inbox link.";
+      codeHint.textContent = "⚠ Email is not configured, so the code is pre-filled here. Anyone near this screen can finish the reset.";
+      codeInput.value = d.code;
     }
     box.hidden = false;
   } catch (e){ err($("srErr"), e.message); }
+}
+async function verifyCode(){
+  const code = ($("srCode").value || "").trim();
+  if (!code){ err($("srCodeErr"), "Enter the verification code first"); return; }
+  err($("srCodeErr"), "");
+  try {
+    const r = await fetch("/auth/verify-code", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    });
+    const d = r.ok ? {} : (await r.json().catch(() => ({})));
+    if (!r.ok) throw new Error(d.error || "verification failed");
+    location.href = "/";   // cookie is now set — reload into the signed-in app
+  } catch (e){ err($("srCodeErr"), e.message); }
 }
 async function logout(){
   try { await fetch("/auth/logout", { method: "POST" }); } catch {}
@@ -534,12 +548,14 @@ async function enterApp(){
   // NEW-CHAT-BY-DEFAULT: start blank; history loads only on click.
   current = null; inner.innerHTML = ""; emptyState();
   $("chatTitle").textContent = "New chat";
-  setSend(false); input.focus();
+  setSend(true); input.focus();   // normal (disabled, no text) — NOT the red stop state
 }
 function wireAuth(){
   $("authLoginBtn").onclick = doLogin;
   $("authPass").addEventListener("keydown", e => { if (e.key === "Enter") doLogin(); });
   $("srSubmit").onclick = submitSetReset;
+  $("srVerify").onclick = verifyCode;
+  $("srCode").addEventListener("keydown", e => { if (e.key === "Enter") verifyCode(); });
   $("logoutBtn").onclick = logout;
   document.querySelectorAll('a[href="#setreset"]').forEach(a =>
     a.onclick = e => { e.preventDefault(); showResetView(); });

@@ -76,8 +76,8 @@ CONFIG = Config(
     upload_dir="/tmp/homeagent/uploads",     # directory for uploaded images
     max_image_mb=20,                         # per-image upload size limit (MB)
 
-    # Optional SMTP for password set/reset activation links. When
-    # email_username is empty sending is disabled and the link is shown
+    # Optional SMTP for password set/reset verification codes. When
+    # email_username is empty sending is disabled and the code is shown
     # on-screen (still works end-to-end).
     email_host="smtp.gmail.com",
     email_port=587,
@@ -139,20 +139,19 @@ Each module does one job and receives its dependencies explicitly:
 - `GET  /auth/users` — lightweight list of accounts (for the splash tiles)
 - `POST /auth/login` — `{"username","password"}` → sets the session cookie
 - `POST /auth/logout` — clears the session
-- `POST /auth/set-or-reset` — request a set/reset link
-  → `{"token","is_new","email_sent","email_note"}`
-- `GET  /auth/activate?token=…` — finalize the link, sign in, redirect to `/`
+- `POST /auth/set-or-reset` — request a set/reset verification code
+  → `{"code"|null,"is_new","email_sent","email_note","delivery"}`
+- `POST /auth/verify-code` — `{"code"}` — finalize the set/reset and set the session cookie
 
 ## Users & privacy
 
 - **Splash screen** — the first thing you see is a tile of every username
   with a single password field, plus a "Set or reset password" link.
 - **Set / reset is one flow** — four fields (username, email, password,
-  confirm). When email is configured, the activation link is sent to the
-  inbox *only* (not shown on-screen) so nobody shoulder-surfing can finish
-  the reset. The on-screen link appears only as an explicitly-warned
-  fallback when email is unconfigured or the send failed — so the flow
-  always works, but the private path is the default.
+  confirm). A one-time 6-character verification code is emailed (it works
+  from any device — nothing to click, no link anywhere). When the email
+  can't be sent, the code is shown on-screen *only* — an explicitly-warned
+  fallback so the flow always works.
 - **Per-user history** — every chat is stored with an `owner`, and every
   `chats`/`messages` query is scoped to the signed-in user. One account can
   never list, read, or delete another's chats.
@@ -165,7 +164,8 @@ Each module does one job and receives its dependencies explicitly:
 - Passwords are hashed with `hashlib.scrypt` (a memory-hard KDF) plus a
   per-password random salt; plaintext is never stored.
 - Sessions are 256-bit random bearer tokens in an `HttpOnly; SameSite=Lax`
-  cookie; activation links are one-shot, hour-bounded tokens.
+  cookie; verification codes are one-shot, hour-bounded, and delivered
+  by email.
 - Uploaded images use unguessable UUID filenames; the DB stores only
   filenames, not base64 blobs. Both `/uploads/*` and all `/api/*` data routes
   require a signed-in session.

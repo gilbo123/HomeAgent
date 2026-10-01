@@ -48,10 +48,8 @@ def build_app(config: Config) -> App:
         history_limit=config.history_limit,
         upload_dir=config.upload_dir,
     )
-    # Email settings for the optional set/reset activation flow. The base URL
-    # is what the browser will land on — when the host is 0.0.0.0 we advertise
-    # 127.0.0.1 (matching how main.py opens the browser).
-    base_host = "127.0.0.1" if config.host in ("0.0.0.0", "::") else config.host
+    # Email settings for the optional set/reset flow (the verification code
+    # is delivered by email rather than a link).
     email = EmailSettings(
         host=config.email_host,
         port=config.email_port,
@@ -59,7 +57,6 @@ def build_app(config: Config) -> App:
         password=config.email_password,
         from_addr=config.email_from,
         use_tls=config.email_use_tls,
-        base_url=f"http://{base_host}:{config.port}",
     )
     users = UserStore(
         mongo_uri=config.mongo_uri,
