@@ -10,5 +10,5 @@ LM Studio). Details in `history.md`.
 Open follow-ups:
 
 - [ ] Test Strata (:8080), vLLM (:8000), LM Studio (:1234) on the server box
-- [ ] Force-push the rewritten history to GitHub (`git push --force origin main`)
+- [x] Force-pushed the rewritten history to GitHub (`main` tracks `origin/main` again)
 - [ ] Rotate the leaked Gmail app password and Google account password
