@@ -3,36 +3,40 @@
 Routing (kept deliberately flat and explicit):
 
     GET    /                          index.html
-    GET    /api/models                models list from Ollama
+    POST   /auth/guest                guest session (memory only, incognito only)
+    GET    /api/providers             configured model providers           [guest ok]
+    GET    /api/models?provider=<id>  that provider's models (empty if down) [guest ok]
+    GET    /uploads/<name>            uploaded image                       [guest ok]
+    POST   /api/upload                upload image  multipart/form-data    [guest ok]
+    POST   /api/incognito             unsaved turn, NDJSON                 [guest ok]
+                                      {provider, model, text, images[], messages[]}
     GET    /api/chats                 chat list
     GET    /api/chats/<id>            chat + messages
-    GET    /uploads/<name>            uploaded image
-    POST   /api/chats                 create chat            {model?}
-    POST   /api/upload                upload image           multipart/form-data
-    POST   /api/chats/<id>/messages   send turn, NDJSON out  {text, images[]}
-    POST   /api/incognito             unsaved turn, NDJSON   {model?, text, images[], messages[]}
+    POST   /api/chats                 create chat            {provider, model}
+    POST   /api/chats/<id>/messages   send turn, NDJSON out  {provider?, model?, text, images[]}
     DELETE /api/chats/<id>            delete chat
 
 Design notes:
     * :class:`App` is the single object the handler needs; it owns the
-      ``Config`` and the services (db / ollama / uploads). Tests can build
-      an :class:`App` with stubs — the handler never imports globals.
+      ``Config`` and the services (db / ollama / agent / uploads). Tests can
+      build an :class:`App` with stubs — the handler never imports globals.
     * The handler is defined here as ``make_handler(app)`` so every
       instance carries its own app reference (no module-level state).
-    * Streaming: we emit NDJSON line by line and keep consuming the
-      Ollama stream even if the browser disconnects, so the assistant
-      reply is always saved (and not lost mid-response).
+    * Streaming: turns are produced by :class:`~homeagent.agent.Agent` and
+      emitted as NDJSON line by line. If the browser disconnects (or the
+      user presses stop) generation stops and the partial reply is saved.
 """
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any
-from urllib import request as urlrequest
+from urllib.parse import parse_qs
 
 from . import __version__
 from .accounts import AuthError
@@ -42,31 +46,9 @@ from .uploads import UploadError, UploadTooLarge, UnsupportedImage
 
 CHAT_ID_RE = re.compile(r"[\w-]+")
 
-_thinking_cache: tuple[float, frozenset[str]] | None = None
-_thinking_ttl = 120.0  # seconds
 
-
-def _thinking_models(host: str) -> frozenset[str]:
-    """Return the set of model names that support thinking (cached briefly).
-
-    Best-effort: ``capabilities`` is metadata that older Ollama may omit, and
-    the request can fail — in either case we simply return an empty set, which
-    means "don't enable thinking" (safe, since non-thinking models reject it).
-    """
-    global _thinking_cache
-    now = time.time()
-    if _thinking_cache and now - _thinking_cache[0] < _thinking_ttl:
-        return _thinking_cache[1]
-    models: set[str] = set()
-    try:
-        tags = json.loads(urlrequest.urlopen(host + "/api/tags", timeout=5).read())
-        for m in tags.get("models", []):
-            if "thinking" in (m.get("capabilities") or []):
-                models.add(m["name"])
-    except Exception:  # noqa: BLE001
-        pass
-    _thinking_cache = (now, frozenset(models))
-    return _thinking_cache[1]
+class BodyTooLarge(Exception):
+    """Request body exceeds the configured cap."""
 
 
 # --------------------------------------------------------------------------
@@ -97,6 +79,9 @@ def make_handler(app: App):
 
         def _read_body(self) -> bytes:
             length = int(self.headers.get("Content-Length") or 0)
+            # One image plus multipart / JSON overhead.
+            if length > (app.cfg.max_image_mb + 1) * 1024 * 1024:
+                raise BodyTooLarge(f"Request too large (max {app.cfg.max_image_mb} MB)")
             return self.rfile.read(length) if length else b""
 
         def _read_json(self) -> dict[str, Any]:
@@ -116,21 +101,25 @@ def make_handler(app: App):
                     return bit[len(name) + 1:].strip()
             return ""
 
-        def _current_user(self) -> str | None:
-            """Resolve the session cookie to a username, or None if absent."""
+        def _session(self) -> dict[str, Any] | None:
+            """The live session behind the cookie (``username``, ``guest``?), or None."""
             token = self._cookie_value("ha_session")
-            if not token:
-                return None
-            sess = app.users.lookup_session(token)
-            return sess.get("username") if sess else None
+            return app.users.lookup_session(token) if token else None
 
-        def _require_user(self) -> str | None:
-            """Return the username, or send 401 and return None if logged out."""
-            user = self._current_user()
-            if user:
-                return user
-            self._send_error_json(401, "not signed in")
-            return None
+        def _require_user(self, allow_guest: bool = False) -> str | None:
+            """Return the username, or send 401/403 and return None.
+
+            Guests have no stored identity, so routes that read or write
+            chat history are closed to them (``allow_guest=False``).
+            """
+            sess = self._session()
+            if not sess:
+                self._send_error_json(401, "not signed in")
+                return None
+            if sess.get("guest") and not allow_guest:
+                self._send_error_json(403, "guest accounts can only use incognito chat")
+                return None
+            return sess["username"]
 
         def _send_cookie(self, name: str, value: str, max_age: int | None) -> None:
             base = f"{name}={value}; Path=/; HttpOnly; SameSite=Lax"
@@ -156,19 +145,22 @@ def make_handler(app: App):
         def _route(self, method: str) -> None:
             """Dispatch a request; wrap every route in one try/except so
             no handler error produces an HTML traceback page."""
-            path = self.path.partition("?")[0]
+            path, _, query = self.path.partition("?")
+            self._query = {k: v[-1] for k, v in parse_qs(query).items()}
             try:
                 self._route_inner(method, path)
+            except BodyTooLarge as e:
+                self.close_connection = True  # the unread body is still on the socket
+                self._send_error_json(413, str(e))
             except Exception as e:  # noqa: BLE001 — last-resort guard
-                code = 500
                 try:
-                    self._send_error_json(code, str(e))
+                    self._send_error_json(500, str(e))
                 except Exception:  # response already started (e.g. mid-stream)
                     pass
 
         # --------------------------------------------------------- routing
 
-        def _route_inner(self, method: str, path: str, query: str = "") -> None:
+        def _route_inner(self, method: str, path: str) -> None:
             # ----- Public routes (reachable logged-in or out) -----
             if method == "GET":
                 if path == "/":
@@ -178,7 +170,6 @@ def make_handler(app: App):
                              else "application/javascript; charset=utf-8")
                     p = os.path.join(os.fspath(app.static_dir), path.lstrip("/"))
                     return self._serve_file(p, ctype)
-                # --- auth (no session required) ---
                 if path == "/auth/me":
                     return self._auth_me()
                 if path == "/auth/users":
@@ -186,6 +177,8 @@ def make_handler(app: App):
             elif method == "POST":
                 if path == "/auth/login":
                     return self._auth_login()
+                if path == "/auth/guest":
+                    return self._auth_guest()
                 if path == "/auth/logout":
                     return self._auth_logout()
                 if path == "/auth/set-or-reset":
@@ -193,28 +186,20 @@ def make_handler(app: App):
                 if path == "/auth/verify-code":
                     return self._auth_verify_code()
 
-            # ----- Data routes (session required) -----
+            # ----- Session routes open to guests (no history involved) -----
+            guest_ok = {
+                ("GET", "/api/providers"): self._get_providers,
+                ("GET", "/api/models"): self._get_models,
+                ("POST", "/api/incognito"): self._incognito,
+                ("POST", "/api/upload"): self._upload,
+            }
+            handler = guest_ok.get((method, path))
+            if handler:
+                return handler() if self._require_user(allow_guest=True) else None
             if method == "GET":
-                if path == "/api/models":
-                    return self._get_models()
-                if path == "/api/chats":
-                    user = self._require_user()
-                    if not user:
-                        return
-                    return self._send_json(200, {
-                        "chats": app.db.list_chats(user),
-                        "default_model": app.cfg.default_model,
-                    })
-                m = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")", path)
-                if m:
-                    user = self._require_user()
-                    if not user:
-                        return
-                    return self._get_chat(m.group(1), user)
                 m = re.fullmatch(r"/uploads/([0-9a-f]{32}\.[a-z0-9]{2,5})", path, re.IGNORECASE)
                 if m:
-                    user = self._require_user()
-                    if not user:
+                    if not self._require_user(allow_guest=True):
                         return
                     stored = m.group(1)
                     # NB: the upload ID is 32-hex UUID (unguessable) and it is
@@ -227,35 +212,24 @@ def make_handler(app: App):
                         return self._serve_file(p, app.uploads.content_type_for(stored),
                                                 cache="public, max-age=86400")
                     return self._send_error_json(404, "Not found")
-            elif method == "POST":
-                if path == "/api/chats":
-                    user = self._require_user()
-                    if not user:
-                        return
+
+            # ----- Chat history routes (registered users only) -----
+            chat = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")", path)
+            chat_msgs = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")/messages", path)
+            if path == "/api/chats" or chat or chat_msgs:
+                user = self._require_user()
+                if not user:
+                    return
+                if method == "GET" and path == "/api/chats":
+                    return self._send_json(200, {"chats": app.db.list_chats(user)})
+                if method == "POST" and path == "/api/chats":
                     return self._create_chat(user)
-                if path == "/api/incognito":
-                    user = self._require_user()
-                    if not user:
-                        return
-                    return self._incognito()
-                if path == "/api/upload":
-                    user = self._require_user()
-                    if not user:
-                        return
-                    return self._upload()
-                m = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")/messages", path)
-                if m:
-                    user = self._require_user()
-                    if not user:
-                        return
-                    return self._send_message(m.group(1), user)
-            elif method == "DELETE":
-                m = re.fullmatch(r"/api/chats/(" + CHAT_ID_RE.pattern + r")", path)
-                if m:
-                    user = self._require_user()
-                    if not user:
-                        return
-                    return self._delete_chat(m.group(1), user)
+                if method == "GET" and chat:
+                    return self._get_chat(chat.group(1), user)
+                if method == "DELETE" and chat:
+                    return self._delete_chat(chat.group(1), user)
+                if method == "POST" and chat_msgs:
+                    return self._send_message(chat_msgs.group(1), user)
 
             self._send_error_json(404, "Not found")
 
@@ -265,12 +239,28 @@ def make_handler(app: App):
 
         # ------------------------------------------------------------- auth
 
+        def _send_session(self, token: str, ttl: int) -> None:
+            """Reply ``{}`` and set the session cookie."""
+            self.send_response(200)
+            self._send_cookie("ha_session", token, ttl)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+
         def _auth_me(self) -> None:
-            """Report the signed-in user, if any (no 401 for guests)."""
-            user = self._current_user()
-            if not user:
+            """Report the signed-in user, if any (no 401 when signed out)."""
+            sess = self._session()
+            if not sess:
                 return self._send_json(200, {"user": None})
+            if sess.get("guest"):
+                return self._send_json(200, {"user": {"username": sess["username"], "guest": True}})
+            user = sess["username"]
             self._send_json(200, {"user": app.users.get_public(user) or {"username": user}})
+
+        def _auth_guest(self) -> None:
+            """Sign in as the guest: memory-only session, incognito chat only."""
+            self._send_session(*app.users.create_guest_session())
 
         def _auth_users(self) -> None:
             """Lightweight list of accounts, for the login-splash tiles."""
@@ -286,12 +276,7 @@ def make_handler(app: App):
                 token, ttl = app.users.create_session(username)
             except AuthError as e:
                 return self._send_error_json(403, str(e))
-            self.send_response(200)
-            self._send_cookie("ha_session", token, ttl)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", "2")
-            self.end_headers()
-            self.wfile.write(b"{}")
+            self._send_session(token, ttl)
 
         def _auth_logout(self) -> None:
             token = self._cookie_value("ha_session")
@@ -358,31 +343,28 @@ def make_handler(app: App):
                 token2, ttl = app.users.create_session(user["username"])
             except AuthError as e:
                 return self._send_error_json(403, str(e))
-            self.send_response(200)
-            self._send_cookie("ha_session", token2, ttl)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", "2")
-            self.end_headers()
-            self.wfile.write(b"{}")
+            self._send_session(token2, ttl)
 
         # -------------------------------------------------------------- GET
 
-        def _get_models(self) -> None:
-            try:
-                models = app.ollama.list_models()
-            except Exception as e:  # noqa: BLE001 — Ollama down
-                # Still return the configured default so the UI has a picker.
-                return self._send_json(502, {
-                    "error": f"Ollama unreachable: {e}",
-                    "models": [app.cfg.default_model],
-                    "default": app.cfg.default_model,
-                })
+        def _get_providers(self) -> None:
             self._send_json(200, {
-                "models": models,
-                "thinking": sorted(_thinking_models(app.cfg.ollama_host)),
-                "default": app.cfg.default_model,
-                "ollama": app.cfg.ollama_host,
+                "providers": app.providers.public(),
+                "default": app.providers.default_id,
             })
+
+        def _get_models(self) -> None:
+            """Models of ``?provider=<id>``; an unreachable server lists none."""
+            provider = app.providers.get(self._query.get("provider"))
+            out: dict[str, Any] = {"provider": provider.id, "url": provider.url}
+            try:
+                models = provider.client.list_models()
+            except Exception as e:  # noqa: BLE001 — server down / not installed
+                return self._send_json(200, {**out, "online": False, "models": [],
+                                             "default": "", "error": str(e)})
+            default = app.cfg.default_model if app.cfg.default_model in models else ""
+            self._send_json(200, {**out, "online": True, "models": models,
+                                  "default": default or (models[0] if models else "")})
 
         def _get_chat(self, chat_id: str, owner: str) -> None:
             try:
@@ -394,9 +376,69 @@ def make_handler(app: App):
         # ------------------------------------------------------------- POST
 
         def _create_chat(self, owner: str) -> None:
-            payload = self._read_json()
-            model = (payload.get("model") or app.cfg.default_model).strip() or app.cfg.default_model
-            self._send_json(201, {"chat": app.db.create_chat(model, owner)})
+            provider, model = self._pick_model(self._read_json())
+            if not model:
+                return self._send_error_json(400, "No model selected")
+            self._send_json(201, {"chat": app.db.create_chat(model, owner, provider.id)})
+
+        def _image_names(self, payload: dict[str, Any]) -> list[str]:
+            """Stored upload names referenced by the request.
+
+            The client may send a "/uploads/<name>" URL or a bare stored name;
+            only names of files that actually exist are kept (prevents path
+            traversal / unknown refs).
+            """
+            raw = payload.get("images") or []
+            if not isinstance(raw, list):
+                return []
+            names = (str(v).strip().removeprefix("/uploads/") for v in raw)
+            return [n for n in names if n and app.uploads.path_for(n)]
+
+        def _pick_model(self, payload: dict[str, Any],
+                        chat: dict[str, Any] | None = None) -> tuple[Any, str]:
+            """(provider, model) from the request, falling back to the chat's."""
+            chat = chat or {}
+            provider = app.providers.get(str(payload.get("provider") or chat.get("provider") or ""))
+            model = str(payload.get("model") or "").strip() or str(chat.get("model") or "")
+            return provider, model
+
+        def _stream_turn(self, provider: Any, messages: list[dict[str, Any]],
+                         model: str) -> dict[str, Any]:
+            """Run one agent turn, streaming NDJSON events to the browser.
+
+            Returns what was produced (content, thinking, tool calls, elapsed
+            ms) so the caller can persist it. Stops early if the client leaves.
+            """
+            self.send_response(200)
+            self.send_header("Content-Type", "application/x-ndjson")
+            self.send_header("Cache-Control", "no-cache")
+            self.end_headers()
+
+            started = time.monotonic()
+            content: list[str] = []
+            thinking: list[str] = []
+            tools: list[dict[str, Any]] = []
+            for ev in app.agent.run(provider.client, messages, model):
+                kind = ev["type"]
+                if kind == "delta":
+                    content.append(ev["content"])
+                elif kind == "think_delta":
+                    thinking.append(ev["content"])
+                elif kind == "tool":
+                    tools.append({"name": ev["name"], "arguments": ev["arguments"], "ok": None})
+                elif kind == "tool_result" and tools:
+                    tools[-1]["ok"] = ev["ok"]
+                try:
+                    self.wfile.write((json.dumps(ev) + "\n").encode("utf-8"))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+            return {
+                "content": "".join(content),
+                "thinking": "".join(thinking),
+                "tools": tools,
+                "ms": int((time.monotonic() - started) * 1000),
+            }
 
         def _incognito(self) -> None:
             """Answer one turn using context the *client* keeps in memory.
@@ -405,23 +447,15 @@ def make_handler(app: App):
             incognito history (plain text turns) plus the new user turn, we
             stream the model reply back, and that's it.
             """
-            import base64
-
             payload = self._read_json()
             text = (payload.get("text") or "").strip()
-            images = payload.get("images") or []
-            if not isinstance(images, list):
-                images = []
-
-            def _name(v: Any) -> str:
-                v = str(v).strip()
-                return v.removeprefix("/uploads/") if v.startswith("/uploads/") else v
-
-            images = [n for v in images if (n := _name(v)) and app.uploads.path_for(n)]
+            images = self._image_names(payload)
             if not text and not images:
                 return self._send_error_json(400, "Empty message")
 
-            model = (payload.get("model") or app.cfg.default_model).strip() or app.cfg.default_model
+            provider, model = self._pick_model(payload)
+            if not model:
+                return self._send_error_json(400, "No model selected")
 
             # Sanitise the in-memory history the client sent us.
             messages: list[dict[str, Any]] = []
@@ -438,33 +472,13 @@ def make_handler(app: App):
             user_msg: dict[str, Any] = {"role": "user", "content": text or "(image)"}
             b64: list[str] = []
             for n in images:
-                p = app.uploads.path_for(n)
-                if p and os.path.isfile(p):
-                    with open(p, "rb") as f:
-                        b64.append(base64.b64encode(f.read()).decode("ascii"))
+                with open(app.uploads.path_for(n), "rb") as f:
+                    b64.append(base64.b64encode(f.read()).decode("ascii"))
             if b64:
                 user_msg["images"] = b64
             messages.append(user_msg)
 
-            self.send_response(200)
-            self.send_header("Content-Type", "application/x-ndjson")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-
-            def push(ev: dict) -> bool:
-                try:
-                    self.wfile.write((json.dumps(ev) + "\n").encode("utf-8"))
-                    self.wfile.flush()
-                    return True
-                except (BrokenPipeError, ConnectionResetError):
-                    return False
-
-            think = app.cfg.thinking and model in _thinking_models(app.cfg.ollama_host)
-            for ev in app.ollama.stream_chat(messages, model, think=think):
-                if not push(ev):
-                    break
-                if ev["type"] in ("done", "error"):
-                    break
+            self._stream_turn(provider, messages, model)
 
         def _upload(self) -> None:
             content_type = self.headers.get("Content-Type", "")
@@ -484,63 +498,27 @@ def make_handler(app: App):
 
         def _send_message(self, chat_id: str, owner: str) -> None:
             try:
-                app.db.get_chat(chat_id, owner)  # exists + owned?
+                chat, _ = app.db.get_chat(chat_id, owner)
             except ChatNotFoundError:
                 return self._send_error_json(404, "Chat not found")
 
             payload = self._read_json()
             text = (payload.get("text") or "").strip()
-            images = payload.get("images") or []
-            if not isinstance(images, list):
-                images = []
-            # The client may send either a "/uploads/<name>" URL or a bare
-            # stored name; normalise to the name, then only keep files that
-            # actually exist (prevents path traversal / unknown refs).
-            def _name(v: Any) -> str:
-                v = str(v).strip()
-                return v.removeprefix("/uploads/") if v.startswith("/uploads/") else v
-
-            images = [n for v in images if (n := _name(v)) and app.uploads.path_for(n)]
+            images = self._image_names(payload)
             if not text and not images:
                 return self._send_error_json(400, "Empty message")
 
-            chat, _ = app.db.get_chat(chat_id, owner)
-            model = chat["model"] or app.cfg.default_model
+            provider, model = self._pick_model(payload, chat)
+            if not model:
+                return self._send_error_json(400, "No model selected")
+            if (provider.id, model) != (chat.get("provider"), chat.get("model")):
+                app.db.set_chat_model(chat_id, owner, provider.id, model)
             app.db.add_user_message(chat_id, text, images)
-            messages = app.db.build_model_messages(chat_id)
-
-            self.send_response(200)
-            self.send_header("Content-Type", "application/x-ndjson")
-            self.send_header("Cache-Control", "no-cache")
-            self.end_headers()
-
-            def push(ev: dict) -> bool:
-                """Write one NDJSON event. Returns False if client is gone."""
+            out = self._stream_turn(provider, app.db.build_model_messages(chat_id), model)
+            if out["content"] or out["thinking"]:
                 try:
-                    self.wfile.write((json.dumps(ev) + "\n").encode("utf-8"))
-                    self.wfile.flush()
-                    return True
-                except (BrokenPipeError, ConnectionResetError):
-                    return False
-
-            think = app.cfg.thinking and model in _thinking_models(app.cfg.ollama_host)
-            started = time.monotonic()
-            acc: list[str] = []
-            acc_think: list[str] = []
-            for ev in app.ollama.stream_chat(messages, model, think=think):
-                if ev["type"] == "delta":
-                    acc.append(ev["content"])
-                elif ev["type"] == "think_delta":
-                    acc_think.append(ev["content"])
-                if not push(ev):
-                    break  # client left — but keep draining so we save below
-                if ev["type"] in ("done", "error"):
-                    break
-            ms = int((time.monotonic() - started) * 1000)
-            if acc or acc_think:
-                try:
-                    app.db.add_assistant_message(chat_id, "".join(acc), model, ms,
-                                                 thinking="".join(acc_think))
+                    app.db.add_assistant_message(chat_id, out["content"], model, out["ms"],
+                                                 thinking=out["thinking"], tools=out["tools"])
                 except Exception as e:  # noqa: BLE001
                     print(f"[!] failed to save assistant message: {e}", flush=True)
 

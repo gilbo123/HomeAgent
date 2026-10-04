@@ -4,7 +4,20 @@ _Project type: unknown_
 
 ## Overview
 
-A self-hosted web chat UI for [Ollama](https://ollama.com) models running on your own machine. Talk to `qwen3.8:27b` (or any model you've pulled) through a professional single-page interface — no cloud, zero pip installs.
+A self-hosted web chat UI for [Ollama](https://ollama.com) models running on your own machine. Talk to `qwen3.8:27b` (or any model you've pulled) through a professional single-page interface — no cloud, one dependency
+(`pymongo`) managed by uv (`pyproject.toml` + `uv.lock`).
+
+## Tools flow (current)
+
+- `agent.py::Agent.run` builds a system prompt (date/time, default location,
+  tool list) and loops: model → `tool_calls` → `tools.py::ToolRegistry.call`
+  → `role: tool` results → model, up to 5 rounds.
+- Tools are only sent to models whose Ollama capabilities include `tools`
+  (`OllamaClient.supports`); thinking likewise needs `thinking`.
+- `get_weather` = Open-Meteo (no key). `web_search` = Brave Search API, only
+  registered when `BRAVE_API_KEY` is set (put it in `prod.env`).
+- Stream events `tool` / `tool_result` render as lines in the reply; the
+  calls are saved on the assistant message as `tools`.
 
 ## How to target work
 

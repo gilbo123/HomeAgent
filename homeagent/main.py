@@ -3,9 +3,10 @@
 This is the ONLY module that wires everything together (dependency
 injection):
 
-    Config -> ChatDatabase + OllamaClient + UploadStore -> App
-                                                        -> Handler factory
-                                                        -> ThreadingHTTPServer
+    Config -> ChatDatabase + UserStore + UploadStore
+           -> OllamaClient + OpenAI-compatible clients -> ProviderRegistry
+           -> ToolRegistry -> Agent
+           -> App -> Handler factory -> ThreadingHTTPServer
 
 Nothing else in the package knows about the others' construction —
 each collaborator receives exactly the dependencies it needs.
@@ -24,13 +25,17 @@ import logging
 import sys
 import webbrowser
 from http.server import ThreadingHTTPServer
+
 from . import __version__
 from .accounts import EmailSettings, UserStore
+from .agent import Agent
 from .app import App
 from .config import CONFIG, Config
 from .db import ChatDatabase
 from .ollama import OllamaClient
+from .providers import build_providers
 from .server import make_handler
+from .tools import build_tools
 from .uploads import UploadStore
 
 log = logging.getLogger("homeagent.main")
@@ -68,6 +73,22 @@ def build_app(config: Config) -> App:
         default_model=config.default_model,
         temperature=config.temperature,
     )
+    providers = build_providers(
+        ollama,
+        [
+            ("strata", "Strata", config.strata_url, config.strata_api_key),
+            ("vllm", "vLLM", config.vllm_url, config.vllm_api_key),
+            ("lmstudio", "LM Studio", config.lmstudio_url, config.lmstudio_api_key),
+        ],
+        temperature=config.temperature,
+        default_id=config.default_provider,
+    )
+    agent = Agent(
+        build_tools(config.default_location, config.brave_api_key),
+        tools_enabled=config.tools_enabled,
+        thinking=config.thinking,
+        default_location=config.default_location,
+    )
     uploads = UploadStore(
         upload_dir=str(config.upload_dir),
         max_image_mb=config.max_image_mb,
@@ -75,7 +96,8 @@ def build_app(config: Config) -> App:
     return App(
         cfg=config,
         db=db,
-        ollama=ollama,
+        providers=providers,
+        agent=agent,
         uploads=uploads,
         users=users,
         static_dir=config.static_dir,
@@ -124,10 +146,16 @@ def main(argv: list[str] | None = None) -> int:
     url = f"http://{browser_host}:{config.port}"
     print(f"HomeAgent v{__version__}")
     print(f"  listening on : {url}")
-    print(f"  ollama       : {config.ollama_host}")
+    for p in app.providers.public():
+        mark = "  (default)" if p["id"] == app.providers.default_id else ""
+        print(f"  {p['label'].lower():<13}: {p['url']}{mark}")
     print(f"  model        : {config.default_model}")
     print(f"  database     : {config.mongo_uri}{config.mongo_db}")
     print(f"  uploads      : {config.upload_dir}")
+    tools = app.agent.tools.names if config.tools_enabled else []
+    print(f"  tools        : {', '.join(tools) or 'off'}"
+          + ("" if config.brave_api_key or not config.tools_enabled
+             else "  (web_search off: set BRAVE_API_KEY)"))
     print(f"  press Ctrl+C to stop")
 
     if config.open_browser:

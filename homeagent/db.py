@@ -33,6 +33,9 @@ from pymongo.errors import (
 )
 
 
+_EMPTY_CHAT_TTL_S = 3600
+
+
 class ChatNotFoundError(LookupError):
     """Raised when an operation targets a chat id that does not exist."""
 
@@ -81,29 +84,23 @@ class ChatDatabase:
     def list_chats(self, owner: str) -> list[dict[str, Any]]:
         """That owner's chats, newest activity first (with a message count).
 
-        Empty placeholder chats (no messages, still the default title) are
-        dropped: they should never appear in the history list.
+        Empty placeholder chats (no messages yet) are never listed. Ones older
+        than ``_EMPTY_CHAT_TTL_S`` are abandoned and get swept; younger ones
+        may be a chat whose first message is in flight, so they are left alone.
         """
-        chats = [_doc(d) for d in
-                 self._chats.find({"owner": owner})
-                 .sort([("updated_at", -1), ("created_at", -1)])]
-        stale = [c["id"] for c in chats
-                 if not c.get("n") and str(c.get("title")) == "New chat"]
-        if stale:
-            self._drop_empty(stale)
-            return [c for c in chats if c["id"] not in set(stale)]
-        return chats
+        self._drop_abandoned(owner)
+        return [_doc(d) for d in
+                self._chats.find({"owner": owner, "n": {"$gt": 0}})
+                .sort([("updated_at", -1), ("created_at", -1)])]
 
-    def _drop_empty(self, chat_ids: list[str]) -> None:
-        """Remove placeholder chats that were never used (no messages)."""
-        ids = list(chat_ids)
-        if not ids:
-            return
+    def _drop_abandoned(self, owner: str) -> None:
+        """Remove that owner's placeholder chats that were never used."""
+        cutoff = int(time.time()) - _EMPTY_CHAT_TTL_S
         try:
-            self._chats.delete_many({"id": {"$in": ids}})
-            self._messages.delete_many({"chat_id": {"$in": ids}})
+            self._chats.delete_many({"owner": owner, "n": {"$lte": 0},
+                                     "created_at": {"$lt": cutoff}})
         except PyMongoError:
-            pass  # best effort — the client simply won't list them
+            pass  # best effort — they are not listed either way
 
     def claim_unowned(self, owner: str) -> int:
         """Migrate pre-auth chats (no ``owner``) to ``owner``. Returns the count.
@@ -137,12 +134,13 @@ class ChatDatabase:
         )
         return _doc(chat), [_doc(m) for m in msgs]
 
-    def create_chat(self, model: str, owner: str) -> dict[str, Any]:
+    def create_chat(self, model: str, owner: str, provider: str = "ollama") -> dict[str, Any]:
         now = int(time.time())
         chat = {
             "id": uuid.uuid4().hex,
             "owner": owner,
             "title": "New chat",
+            "provider": provider,
             "model": model,
             "created_at": now,
             "updated_at": now,
@@ -151,10 +149,15 @@ class ChatDatabase:
         self._chats.insert_one(chat)
         return _doc(chat)
 
+    def set_chat_model(self, chat_id: str, owner: str, provider: str, model: str) -> None:
+        """Switch the provider/model later turns of this chat use."""
+        self._chats.update_one({"id": chat_id, "owner": owner},
+                               {"$set": {"provider": provider, "model": model}})
+
     def delete_chat(self, chat_id: str, owner: str) -> None:
         # Scoped by owner: a token-holding user can only delete their own chat.
-        self._chats.delete_one({"id": chat_id, "owner": owner})
-        self._messages.delete_many({"chat_id": chat_id})
+        if self._chats.delete_one({"id": chat_id, "owner": owner}).deleted_count:
+            self._messages.delete_many({"chat_id": chat_id})
 
     # ---------------------------------------------------------------- messages
 
@@ -171,13 +174,16 @@ class ChatDatabase:
         self._bump(chat_id, now, title_if_first=text)
 
     def add_assistant_message(self, chat_id: str, content: str, model: str, response_ms: int,
-                             thinking: str = "") -> None:
+                             thinking: str = "",
+                             tools: list[dict[str, Any]] | None = None) -> None:
+        """Store an assistant turn; ``tools`` lists the tool calls it made."""
         now = int(time.time())
         self._messages.insert_one({
             "chat_id": chat_id,
             "role": "assistant",
             "content": content,
             "thinking": thinking,
+            "tools": list(tools or []),
             "model": model,
             "response_ms": response_ms,
             "created_at": now,

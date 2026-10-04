@@ -1,10 +1,12 @@
 "use strict";
 const $ = id => document.getElementById(id);
 const feed = $("feed"), inner = $("inner"), input = $("input"),
-      modelSel = $("model"), prevRow = $("prevRow"), fileIn = $("file");
+      modelSel = $("model"), providerSel = $("provider"),
+      prevRow = $("prevRow"), fileIn = $("file");
 let chats = [], current = null, modelDefault = "", pendingImages = [],
     busy = false, controller = null;
 let incognito = false, incogContext = [];   // in-memory turns for incognito mode (never saved)
+let isGuest = false;                        // guest account: always incognito, no history
 
 /* ---------------- utils ---------------- */
 const esc = s => s.replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
@@ -91,6 +93,21 @@ function thinkBlock(text, open=false){
   if(!text) return "";
   return `<details class="think"${open?" open":""}><summary>💭 Thinking</summary><div class="think-body">${decodeEntities(esc(text)).replace(/\n/g,"<br>")}</div></details>`;
 }
+// One line per tool the model called (weather lookup, web search, …).
+function toolLabel(t){
+  const a = t.arguments || {};
+  if (t.name === "get_weather") return "🌤 Weather" + (a.location ? " · " + a.location : "");
+  if (t.name === "web_search") return "🔎 Web search" + (a.query ? " · " + a.query : "");
+  return "🔧 " + t.name;
+}
+function toolChip(t){
+  const state = t.ok === null || t.ok === undefined ? "run" : (t.ok ? "ok" : "fail");
+  const mark = {run:"…", ok:"✓", fail:"⚠"}[state];
+  return `<div class="toolcall ${state}"><span>${esc(toolLabel(t))}</span><span class="mark">${mark}</span></div>`;
+}
+function toolsBlock(tools){
+  return tools && tools.length ? `<div class="toolcalls">${tools.map(toolChip).join("")}</div>` : "";
+}
 function msgNode(role, content, opts={}){
   const el = document.createElement("div");
   el.className = "msg " + role;
@@ -99,7 +116,8 @@ function msgNode(role, content, opts={}){
     `<img src="${u}" alt="attachment" style="max-width:220px;border-radius:8px;margin-top:6px;display:block">`).join("");
   const body = role === "user"
     ? esc(content) + imgs
-    : (opts.thinking ? thinkBlock(opts.thinking) : "") + (content ? renderMarkdown(content) : "");
+    : (opts.thinking ? thinkBlock(opts.thinking) : "") + toolsBlock(opts.tools)
+      + (content ? renderMarkdown(content) : "");
   el.innerHTML = `
     <div class="avatar">${avatar}</div>
     <div class="bubble">
@@ -121,7 +139,8 @@ function emptyState(){
   d.className = "empty"; d.id = "empty";
   d.innerHTML = `<div class="big">🏠</div>
     <b style="color:var(--text)">Home Agent</b>
-    <span>Local chat with your Ollama models — <b style="color:var(--text)">${esc(modelDefault||"qwen3.8:27b")}</b> by default.</span>
+    <span>Local chat with your own models${modelSel.value ? ` — <b style="color:var(--text)">${esc(modelSel.value)}</b> on ${esc(providerLabel(providerSel.value))}` : ""}.</span>
+    ${isGuest ? `<span>🕶 You're signed in as a guest — nothing is saved.</span>` : ""}
     <span>Try asking it to write a Python script, explain an error, or <i>attach a screenshot</i>.</span>
     <span><kbd>Enter</kbd> send · <kbd>Shift</kbd>+<kbd>Enter</kbd> newline · <kbd>🖼</kbd> image</span>`;
   feed.prepend(d);
@@ -141,8 +160,9 @@ function renderChats(){
   if (!chats.length) list.innerHTML = `<div style="padding:10px 12px;font-size:12px;color:var(--dim)">No chats yet</div>`;
 }
 async function loadChats(){
+  if (isGuest){ chats = []; return; }
   const r = await fetch("/api/chats").then(x=>x.json());
-  chats = r.chats; modelDefault = r.default_model;
+  chats = r.chats || [];
   renderChats();
 }
 async function deleteChat(id){
@@ -175,6 +195,7 @@ function incogReset(){
 }
 function setIncognito(on){
   if (busy){ flash("Wait for the current reply to finish first"); return; }
+  if (isGuest) on = true;   // guests have no history to go back to
   incognito = on;
   document.body.classList.toggle("incognito", on);
   $("chatsWrap").hidden = on;
@@ -198,7 +219,8 @@ async function ensureChat(){
   // Chats are created lazily — only when the first message is actually sent.
   if (current) return;
   const r = await fetch("/api/chats", {method:"POST", headers:{"Content-Type":"application/json"},
-    body: JSON.stringify({model: modelSel.value})}).then(x=>x.json());
+    body: JSON.stringify({provider: providerSel.value, model: modelSel.value})}).then(x=>x.json());
+  if (!r.chat) throw new Error(r.error || "could not create chat");
   current = r.chat;
   // NB: do NOT call loadChats() here — list_chats() auto-drops empty
   // "New chat" placeholders (n=0), which would delete the chat we just made
@@ -212,14 +234,17 @@ async function openChat(id){
     await deleteEmptyChat(current.id);
   const r = await fetch("/api/chats/"+id).then(x=>x.json());
   current = r.chat;
-  modelSel.value = r.chat.model;
+  const pid = r.chat.provider || "ollama";
+  if (providers.some(p => p.id === pid)) providerSel.value = pid;
+  loadModels(r.chat.model);   // not awaited: an offline provider shouldn't delay the chat
   inner.innerHTML = "";
   r.messages.forEach(m => {
     if (m.role === "user") {
       // New server returns images as a JSON array; older payloads as a string.
       const imgs = Array.isArray(m.images) ? m.images : (m.images ? JSON.parse(m.images) : []);
       addMessage("user", m.content, {images: imgs});
-    } else addMessage("assistant", m.content, {model:m.model, ms:m.response_ms, thinking:m.thinking||""});
+    } else addMessage("assistant", m.content,
+        {model:m.model, ms:m.response_ms, thinking:m.thinking||"", tools:m.tools||[]});
   });
   if (!r.messages.length) emptyState();
   $("chatTitle").textContent = r.chat.title;
@@ -228,35 +253,42 @@ async function openChat(id){
   input.focus();
 }
 
-/* ---------------- models ---------------- */
-function ollamaLabel(base){
-  let h = base || "ollama";
+/* ---------------- providers & models ---------------- */
+let providers = [];
+const providerLabel = id => (providers.find(p => p.id === id) || {label: id || "server"}).label;
+function hostLabel(label, base){
+  let h = base || "";
   try { h = new URL(base).host; } catch { /* not a URL — use as-is */ }
-  return /(^127\.|^localhost)/i.test(h) ? "Local Ollama server" : `Ollama server · ${h}`;
+  return /(^127\.|^localhost)/i.test(h) ? `${label} · this machine` : `${label} · ${h}`;
 }
-async function loadModels(){
+async function loadProviders(){
   try {
-    const r = await fetch("/api/models").then(async x => ({ok:x.ok, data:await x.json()}));
-    const d = r.data;
-    if (d.models) modelDefault = d.default;
-    const models = d.models && d.models.length ? d.models : (modelDefault ? [modelDefault] : []);
-    modelSel.innerHTML = "";
-    models.forEach(m => {
-      const o = document.createElement("option");
-      o.value = m; o.textContent = m;
-      if (m === (current && current.model) || m === modelDefault) o.selected = true;
-      modelSel.appendChild(o);
-    });
-    if (current) modelSel.value = current.model;
-    $("ollamaDot").classList.toggle("ok", !!r.data.models);
-    $("ollamaState").textContent = r.data.models ? "Ollama online" : "Ollama offline";
-    $("ollamaHost").textContent = ollamaLabel(d.ollama);
-  } catch {
-    $("ollamaDot").classList.remove("ok");
-    $("ollamaState").textContent = "Ollama offline";
-    $("ollamaHost").textContent = "Ollama offline";
-  }
-  if (modelDefault && !modelSel.value) modelSel.value = modelDefault;
+    const d = await fetch("/api/providers").then(x => x.json());
+    providers = d.providers || [];
+    providerSel.innerHTML = providers.map(p =>
+      `<option value="${esc(p.id)}">${esc(p.label)}</option>`).join("");
+    providerSel.value = d.default;
+  } catch { providers = []; providerSel.innerHTML = ""; }
+}
+// Fill the model list for the selected provider (empty when it's offline or
+// has nothing loaded). `want` is preselected when the provider offers it.
+async function loadModels(want){
+  const pid = providerSel.value, label = providerLabel(pid);
+  $("ollamaState").textContent = `checking ${label}…`;
+  let d = {online:false, models:[], default:""};
+  try { d = await fetch("/api/models?provider=" + encodeURIComponent(pid)).then(x => x.json()); }
+  catch { /* treated as offline */ }
+  if (providerSel.value !== pid) return;  // the user switched again meanwhile
+  const models = d.models || [];
+  modelDefault = d.default || "";
+  modelSel.innerHTML = models.map(m => `<option value="${esc(m)}">${esc(m)}</option>`).join("");
+  modelSel.value = want && models.includes(want) ? want : modelDefault;
+  $("ollamaDot").classList.toggle("ok", !!d.online);
+  $("ollamaState").textContent = !d.online ? `${label} offline`
+    : models.length ? `${label} online` : `${label} online · no models`;
+  $("ollamaHost").textContent = hostLabel(label, d.url);
+  if ($("empty")){ $("empty").remove(); emptyState(); }
+  setSend(!busy);
 }
 
 /* ---------------- images ---------------- */
@@ -291,7 +323,10 @@ async function send(){
   if (busy) return;
   const text = input.value.trim();
   if (!text && !pendingImages.length) return;
-  if (!incognito) await ensureChat();
+  if (!modelSel.value){ flash(`No model available on ${providerLabel(providerSel.value)}`); return; }
+  if (!incognito){
+    try { await ensureChat(); } catch (e){ flash(e.message); return; }
+  }
   clearEmpty();
   input.value = ""; autosize();
   addMessage("user", text || "(image)", {images: pendingImages});
@@ -321,6 +356,16 @@ async function send(){
     const body = thinkEl.querySelector(".think-body");
     body.innerHTML = decodeEntities(esc(thinkAcc)).replace(/\n/g,"<br>");
   }
+  // Tool calls — a strip above the answer, one line per call.
+  let toolsEl = null; const toolsAcc = [];
+  function paintTools(){
+    if (!toolsEl){
+      toolsEl = document.createElement("div");
+      toolsEl.className = "toolcalls";
+      contentEl.parentNode.insertBefore(toolsEl, contentEl);
+    }
+    toolsEl.innerHTML = toolsAcc.map(toolChip).join("");
+  }
 
   const t0 = performance.now();
   controller = new AbortController();
@@ -330,10 +375,11 @@ async function send(){
     if (incognito){
       // Context is carried by the client in `messages`; nothing is saved.
       url = "/api/incognito";
-      body = {model: modelSel.value, text, images, messages: incogContext};
+      body = {provider: providerSel.value, model: modelSel.value, text, images, messages: incogContext};
     } else {
       url = `/api/chats/${current.id}/messages`;
-      body = {text, images};
+      body = {provider: providerSel.value, model: modelSel.value, text, images};
+      current.provider = body.provider; current.model = body.model;
     }
     const resp = await fetch(url, {
       method:"POST", headers:{"Content-Type":"application/json"},
@@ -361,6 +407,13 @@ async function send(){
           acc += ev.content;
           contentEl.innerHTML = renderMarkdown(acc) + `<span class="cursor"></span>`;
           if (atBottom()) feed.scrollTop = feed.scrollHeight;
+        } else if (ev.type === "tool"){
+          if (thinkEl && thinkEl.open) thinkEl.open = false;
+          toolsAcc.push({name: ev.name, arguments: ev.arguments, ok: null});
+          paintTools();
+        } else if (ev.type === "tool_result"){
+          const t = toolsAcc[toolsAcc.length - 1];
+          if (t){ t.ok = ev.ok; paintTools(); }
         } else if (ev.type === "error"){
           contentEl.insertAdjacentHTML("beforeend", `<p style="color:var(--err)">⚠ ${esc(ev.error)}</p>`);
         }
@@ -388,7 +441,10 @@ async function send(){
 }
 function setSend(on){
   const b = $("sendBtn");
-  if (on){ b.className="send"; b.textContent="➤"; b.disabled = !(input.value.trim()||pendingImages.length); b.title="Send"; }
+  if (on){
+    b.className="send"; b.textContent="➤"; b.title = modelSel.value ? "Send" : "No model selected";
+    b.disabled = !modelSel.value || !(input.value.trim()||pendingImages.length);
+  }
   else { b.className="send stop"; b.textContent="■"; b.disabled=false; b.title="Stop"; }
 }
 function bindCopy(scope){
@@ -410,7 +466,9 @@ $("sendBtn").onclick = () => { busy ? controller && controller.abort() : send();
 $("newChat").onclick = newChat;
 $("attachBtn").onclick = () => fileIn.click();
 fileIn.onchange = () => fileIn.files.length && attach([...fileIn.files]);
-$("refreshModels").onclick = loadModels;
+$("refreshModels").onclick = () => loadModels(modelSel.value);
+providerSel.onchange = () => loadModels();
+modelSel.onchange = () => setSend(!busy);
 $("incognitoToggle").onclick = () => setIncognito(!incognito);
 function closeNav(){ document.body.classList.remove("nav-open"); $("scrim").hidden = true; }
 $("menuBtn").onclick = () => {
@@ -462,8 +520,21 @@ async function loadTiles(){
     t.onclick = () => pickTile(u.username);
     tiles.appendChild(t);
   });
+  const g = document.createElement("div");
+  g.className = "auth-tile guest";
+  g.innerHTML = `<b>🕶 Guest</b><span class="badge">no password · nothing saved</span>`;
+  g.onclick = guestLogin;
+  tiles.appendChild(g);
   $("authTilesEmpty").hidden = users.length > 0;
   selUser = null;
+}
+async function guestLogin(){
+  err($("authErr"), "");
+  try {
+    const r = await fetch("/auth/guest", {method: "POST"});
+    if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || "guest sign-in failed");
+    await enterApp();
+  } catch (e){ err($("authErr"), e.message); }
 }
 async function doLogin(){
   if (!selUser){ err($("authErr"), "Select your username tile first"); return; }
@@ -482,6 +553,7 @@ async function submitSetReset(){
   const username = $("srUser").value.trim(), email = $("srEmail").value.trim(),
         password = $("srPass").value, confirm = $("srConfirm").value;
   if (!username || !email){ err($("srErr"), "Fill in username and email"); return; }
+  if (username.includes("@")){ err($("srErr"), "Username can't be an email address — your email goes in the Email field"); return; }
   if (password.length < 8){ err($("srErr"), "Password must be at least 8 characters"); return; }
   if (password !== confirm){ err($("srErr"), "Passwords do not match"); return; }
   err($("srErr"), ""); err($("srCodeErr"), "");
@@ -539,15 +611,23 @@ async function enterApp(){
   const r = await (await fetch("/auth/me")).json();
   if (!r.user) throw new Error("not signed in");
   currentUser = r.user;
+  isGuest = !!r.user.guest;
+  document.body.classList.toggle("guest", isGuest);
   $auth.hidden = true;
   $("userFoot").hidden = false;
   $("statusFoot").hidden = false;
   $("userName").textContent = r.user.username || "";
+  $("incognitoToggle").hidden = isGuest;
+  await loadProviders();
   await loadModels();
   await loadChats();
-  // NEW-CHAT-BY-DEFAULT: start blank; history loads only on click.
-  current = null; inner.innerHTML = ""; emptyState();
-  $("chatTitle").textContent = "New chat";
+  if (isGuest){
+    setIncognito(true);
+  } else {
+    // NEW-CHAT-BY-DEFAULT: start blank; history loads only on click.
+    current = null; inner.innerHTML = ""; emptyState();
+    $("chatTitle").textContent = "New chat";
+  }
   setSend(true); input.focus();   // normal (disabled, no text) — NOT the red stop state
 }
 function wireAuth(){

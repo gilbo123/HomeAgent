@@ -29,6 +29,11 @@ Design notes
 * Session cookies are :class:`secrets`-generated opaque tokens, ``HttpOnly``
   and ``SameSite=Lax``. Sessions expire after seven days.
 
+* The **guest** account is never stored: guest sessions live only in this
+  process's memory (a server restart signs guests out), there is no user
+  document, and the HTTP layer restricts guests to incognito chat. The
+  username ``guest`` is reserved so no real account can take it.
+
 * Email delivery is optional and uses stdlib :mod:`smtplib`. When the config
   does not set an SMTP host (or the send fails), the verification code is
   shown on-screen for this exact session instead (still fully functional).
@@ -41,6 +46,7 @@ import hmac
 import os
 import secrets
 import smtplib
+import threading
 import time
 from dataclasses import dataclass
 from email.mime.text import MIMEText
@@ -52,6 +58,9 @@ from pymongo import MongoClient, errors
 # Token lifetimes
 SESSION_TTL_S = 7 * 24 * 3600  # one week
 ACTIVATION_TTL_S = 3600        # one hour
+GUEST_TTL_S = 12 * 3600        # half a day
+
+GUEST_USERNAME = "Guest"
 
 
 # ------------------------------------------------------------------- helpers
@@ -239,6 +248,8 @@ class UserStore:
         self._users = self._db["users"]
         self._sessions = self._db["sessions"]
         self._activations = self._db["activations"]
+        self._guests: dict[str, int] = {}  # token -> expires_at (memory only)
+        self._guests_lock = threading.Lock()
         self._index()
 
     def _index(self) -> None:
@@ -291,6 +302,10 @@ class UserStore:
         email_addr = _clean_email(email_addr)
         if not username or len(username) < 2 or len(username) > 40:
             raise InvalidRequest("username must be 2-40 characters")
+        if "@" in username:
+            raise InvalidRequest("username can't be an email address — your email goes in the Email field")
+        if username.lower() == GUEST_USERNAME.lower():
+            raise InvalidRequest(f"{GUEST_USERNAME!r} is reserved for the guest account")
         if not _valid_email(email_addr):
             raise InvalidRequest("email looks invalid")
         if not password or len(password) < 8:
@@ -424,8 +439,25 @@ class UserStore:
         })
         return token, SESSION_TTL_S
 
+    def create_guest_session(self) -> tuple[str, int]:
+        """A memory-only session for the guest account (nothing hits the DB)."""
+        now = int(time.time())
+        token = new_token()
+        with self._guests_lock:
+            self._guests = {t: exp for t, exp in self._guests.items() if exp > now}
+            self._guests[token] = now + GUEST_TTL_S
+        return token, GUEST_TTL_S
+
     def lookup_session(self, token: str) -> dict[str, Any] | None:
+        """``{"username", ...}`` for a live session; guests also get ``guest: True``."""
         if not token:
+            return None
+        with self._guests_lock:
+            guest_exp = self._guests.get(token)
+        if guest_exp is not None:
+            if guest_exp > int(time.time()):
+                return {"username": GUEST_USERNAME, "guest": True}
+            self.delete_session(token)
             return None
         s = self._sessions.find_one({"token": token})
         if not s:
@@ -442,6 +474,9 @@ class UserStore:
         return _doc(s)
 
     def delete_session(self, token: str) -> None:
+        with self._guests_lock:
+            if self._guests.pop(token, None) is not None:
+                return
         try:
             self._sessions.delete_one({"token": token})
         except errors.PyMongoError:

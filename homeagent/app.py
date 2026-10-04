@@ -9,10 +9,11 @@ class App:
     HTTP handler never reaches into module-level state.
     """
 
-    def __init__(self, cfg, db, ollama, uploads, users, static_dir: str | Path):
+    def __init__(self, cfg, db, providers, agent, uploads, users, static_dir: str | Path):
         self.cfg = cfg
         self.db = db
-        self.ollama = ollama
+        self.providers = providers
+        self.agent = agent
         self.uploads = uploads
         self.users = users
         self.static_dir = static_dir

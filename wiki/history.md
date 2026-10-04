@@ -2,6 +2,47 @@
 
 Completed work only — newest first. Active checklist lives in `wiki/current.md`.
 
+### 2026-10-05 — Guest sign-in + model providers
+- **Guest tile** on the splash: `POST /auth/guest` → memory-only session in
+  `UserStore` (no user doc, restart signs guests out). `_require_user(allow_guest)`
+  gates routes: guests get providers/models/upload/incognito; `/api/chats*`
+  → 403. UI forces incognito, hides the toggle and history. `guest` is a
+  reserved username.
+- **Providers**: `openai_compat.py` (OpenAI-compatible SSE client: images as
+  data URLs, tool-call ids, `reasoning_content` → thinking, retry-without-tools
+  when a server rejects them) + `providers.py` registry. Config
+  `STRATA_URL` / `VLLM_URL` / `LMSTUDIO_URL` (+ `_API_KEY`), `DEFAULT_PROVIDER`.
+  `Agent.run(client, …)` is provider-agnostic.
+- UI: Provider dropdown; `/api/models?provider=` → empty list when offline,
+  Send disabled without a model. Chats store `provider`; changing
+  provider/model mid-chat is saved (`db.set_chat_model`).
+- Verified the OpenAI-compatible path against Ollama's own `/v1` (tools,
+  reasoning, image) and the guest flow in the browser. Strata / vLLM /
+  LM Studio themselves untested (they run on the server box).
+- Fix: tool-call CSS had reused the composer's `.tools` class → `.toolcalls`.
+
+### 2026-10-05 — Tools (weather + web search), uv, cleanup
+- Root cause of "my ISP blocks agentic requests": the app never sent tools to
+  Ollama, so the model had no way to go online and made up an excuse.
+  Outbound access was verified fine (Open-Meteo, DuckDuckGo, GitHub).
+- New `tools.py` (`get_weather` via Open-Meteo, `web_search` via Brave Search
+  API, `BRAVE_API_KEY`) and `agent.py` (system prompt + tool loop) using
+  Ollama native tool-calling — no MCP layer.
+- UI shows each tool call (pending / done / failed) above the answer; saved
+  with the message.
+- uv project: `pyproject.toml` + `uv.lock`; `run.sh` uses `uv run`
+  (the old `~/.virtualenvs/chat` env no longer existed).
+- Cleanup: `.gitignore` inline comments (git doesn't support them);
+  `delete_chat` only deletes messages of a chat the owner actually deleted;
+  `list_chats` filters empty chats in the query and sweeps only ones older
+  than 1 h; thinking/tools capability cache moved onto `OllamaClient`;
+  stream helpers deduplicated; imports at top; request body cap (413);
+  `OLLAMA_HOST` without a scheme is normalised in `config.py`; Ollama HTTP
+  errors reported verbatim; dead `load_config` removed.
+- Security: the Gmail app password and an older Google password were still in
+  git history — rewritten with `git filter-repo` (backup bundle in `/tmp`).
+  Both passwords must be rotated regardless (the repo is public).
+
 ### 2026-10-01 — Secrets out of code, into `prod.env`
 - Gmail SMTP credentials were hardcoded in **two** tracked files
   (`homeagent/config.py` and `EmailSettings` defaults in `homeagent/accounts.py`)

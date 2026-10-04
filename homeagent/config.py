@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import urlsplit
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,20 @@ class Config:
     temperature: float
     history_limit: int
     thinking: bool
+
+    # other providers (OpenAI-compatible; url "" = not offered)
+    default_provider: str
+    strata_url: str
+    strata_api_key: str
+    vllm_url: str
+    vllm_api_key: str
+    lmstudio_url: str
+    lmstudio_api_key: str
+
+    # tools
+    tools_enabled: bool
+    default_location: str
+    brave_api_key: str
 
     # storage
     static_dir: str
@@ -100,6 +115,20 @@ def _env_bool(name: str, default: bool) -> bool:
     return _env(name, "true" if default else "false").lower() in ("1", "true", "yes", "on")
 
 
+def _env_url(name: str, default: str) -> str:
+    """A base URL; ``host:port`` (as Ollama's own OLLAMA_HOST allows) gets ``http://``."""
+    value = _env(name, default).strip().rstrip("/")
+    return value if value.startswith(("http://", "https://")) else "http://" + value
+
+
+def _env_openai_url(name: str, default: str) -> str:
+    """An OpenAI-compatible base URL ending in ``/v1``; "" stays "" (disabled)."""
+    if not _env(name, default).strip():
+        return ""
+    url = _env_url(name, default)
+    return url if urlsplit(url).path not in ("", "/") else url + "/v1"
+
+
 _install_env_files()
 
 CONFIG: Config = Config(
@@ -109,11 +138,25 @@ CONFIG: Config = Config(
     open_browser=_env_bool("OPEN_BROWSER", False),  # auto-open the UI on startup
 
     # -- ollama -------------------------------------------------------------
-    ollama_host=_env("OLLAMA_HOST", "http://127.0.0.1:11434"),  # base URL of the Ollama server
+    ollama_host=_env_url("OLLAMA_HOST", "http://127.0.0.1:11434"),  # base URL of the Ollama server
     default_model=_env("DEFAULT_MODEL", "qwen3.8:27b"),         # default model for new chats
     temperature=float(_env("TEMPERATURE", "0.7")),              # sampling temperature
     history_limit=int(_env("HISTORY_LIMIT", "60")),             # max context turns
     thinking=_env_bool("THINKING", True),                       # model thinking mode
+
+    # -- other providers (OpenAI-compatible APIs; "" = not offered) ----------
+    default_provider=_env("DEFAULT_PROVIDER", "ollama"),        # ollama | strata | vllm | lmstudio
+    strata_url=_env_openai_url("STRATA_URL", "http://127.0.0.1:8080/v1"),
+    strata_api_key=_env("STRATA_API_KEY", ""),
+    vllm_url=_env_openai_url("VLLM_URL", "http://127.0.0.1:8000/v1"),
+    vllm_api_key=_env("VLLM_API_KEY", ""),
+    lmstudio_url=_env_openai_url("LMSTUDIO_URL", "http://127.0.0.1:1234/v1"),
+    lmstudio_api_key=_env("LMSTUDIO_API_KEY", ""),
+
+    # -- tools (the model calls these via Ollama native tool-calling) --------
+    tools_enabled=_env_bool("TOOLS_ENABLED", True),             # offer tools to tool-capable models
+    default_location=_env("DEFAULT_LOCATION", "Brisbane, Queensland, Australia"),  # weather default
+    brave_api_key=_env("BRAVE_API_KEY", ""),                    # "" = web_search tool disabled
 
     # -- storage ------------------------------------------------------------
     static_dir=os.path.join(_HERE, "static"),    # bundled web UI
@@ -130,11 +173,3 @@ CONFIG: Config = Config(
     email_from=_env("EMAIL_FROM", ""),
     email_use_tls=_env_bool("EMAIL_USE_TLS", True),
 )
-
-
-def load_config(path: str | None = None) -> Config:
-    """Backwards-compat shim. ``path`` is ignored — CONFIG is the only source.
-
-    Kept because ``main.py`` calls this to preserve the CLI surface.
-    """
-    return CONFIG

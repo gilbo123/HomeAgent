@@ -40,7 +40,7 @@
           <h2>Set or reset password</h2>
           <p class="auth-sub">Use this for a first-time set <i>or</i> a reset — same flow.</p>
           <div class="auth-field">
-            <label for="srUser">Username</label>
+            <label for="srUser">Username <span class="muted">· shown on the sign-in tile, not your email</span></label>
             <input id="srUser" autocomplete="off" maxlength="40" spellcheck="false">
           </div>
           <div class="auth-field">
@@ -93,14 +93,18 @@
             <div class="logo">🏠</div>
             <div>
                 <b>Home Agent</b>
-                <small id="ollamaHost">Ollama server</small>
+                <small id="ollamaHost">Model server</small>
             </div>
         </div>
 
         <div class="modelsel">
+            <label for="provider">Provider</label>
+            <select id="provider"></select>
+        </div>
+        <div class="modelsel">
             <label for="model">Model</label>
             <select id="model"></select>
-            <button class="btnghost" id="refreshModels" title="Re-check models with Ollama">↻</button>
+            <button class="btnghost" id="refreshModels" title="Re-check this provider's models">↻</button>
         </div>
 
         <button class="newbtn" id="newChat">＋ New chat</button>
@@ -124,7 +128,7 @@
         </div>
         <div class="sbfoot" id="statusFoot">
             <span class="dot" id="ollamaDot"></span>
-            <span id="ollamaState">checking Ollama…</span>
+            <span id="ollamaState">checking models…</span>
         </div>
     </aside>
 
