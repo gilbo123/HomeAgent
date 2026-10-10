@@ -16,6 +16,7 @@ Event shapes yielded by :meth:`OllamaClient.stream_chat`:
 
 from __future__ import annotations
 
+import http.client
 import json
 import threading
 import time
@@ -147,6 +148,8 @@ class OllamaClient:
                         "duration_ms": int(obj.get("total_duration", 0)) // 1_000_000,
                     }
                     return
+        except (OSError, http.client.HTTPException) as e:
+            yield {"type": "error", "error": f"Lost connection to Ollama mid-reply ({e})"}
         finally:
             resp.close()
 

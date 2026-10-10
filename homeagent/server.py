@@ -35,6 +35,8 @@ import os
 import re
 import socket
 import time
+import traceback
+from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler
 from typing import Any
 from urllib.parse import parse_qs
@@ -414,6 +416,15 @@ def make_handler(app: App):
             model = str(payload.get("model") or "").strip() or str(chat.get("model") or "")
             return provider, model
 
+        def _safe_events(self, events: Iterator[dict[str, Any]]) -> Iterator[dict[str, Any]]:
+            """Turn a crash mid-turn into an ``error`` event so the chunked
+            body is still terminated (otherwise the browser sees a network error)."""
+            try:
+                yield from events
+            except Exception as e:  # noqa: BLE001
+                traceback.print_exc()
+                yield {"type": "error", "error": f"Server error: {e}"}
+
         def _stream_turn(self, provider: Any, messages: list[dict[str, Any]],
                          model: str) -> dict[str, Any]:
             """Run one agent turn, streaming NDJSON events to the browser.
@@ -430,18 +441,25 @@ def make_handler(app: App):
             self.send_header("Cache-Control", "no-cache, no-transform")
             self.send_header("X-Accel-Buffering", "no")
             self.send_header("X-Content-Type-Options", "nosniff")
-            self.send_header("Transfer-Encoding", "chunked")
+            # HTTP/1.0 clients (e.g. nginx's default proxy_http_version) can't
+            # decode chunked framing; for them the body ends when we close.
+            chunked = self.request_version == "HTTP/1.1"
+            if chunked:
+                self.send_header("Transfer-Encoding", "chunked")
+            else:
+                self.send_header("Connection", "close")
+                self.close_connection = True
             self.end_headers()
 
             def write_chunk(data: bytes) -> None:
-                self.wfile.write(b"%X\r\n%s\r\n" % (len(data), data))
+                self.wfile.write(b"%X\r\n%s\r\n" % (len(data), data) if chunked else data)
                 self.wfile.flush()
 
             started = time.monotonic()
             content: list[str] = []
             thinking: list[str] = []
             tools: list[dict[str, Any]] = []
-            for ev in app.agent.run(provider.client, messages, model):
+            for ev in self._safe_events(app.agent.run(provider.client, messages, model)):
                 kind = ev["type"]
                 if kind == "delta":
                     content.append(ev["content"])
@@ -453,13 +471,14 @@ def make_handler(app: App):
                     tools[-1]["ok"] = ev["ok"]
                 try:
                     write_chunk((json.dumps(ev) + "\n").encode("utf-8"))
-                except (BrokenPipeError, ConnectionResetError):
+                except OSError:
                     self.close_connection = True
                     break
             else:
                 try:
-                    self.wfile.write(b"0\r\n\r\n")  # end of chunked body
-                except (BrokenPipeError, ConnectionResetError):
+                    if chunked:
+                        self.wfile.write(b"0\r\n\r\n")  # end of chunked body
+                except OSError:
                     self.close_connection = True
             return {
                 "content": "".join(content),

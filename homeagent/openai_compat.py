@@ -21,6 +21,7 @@ retried once without tools and the model is remembered as tool-less.
 from __future__ import annotations
 
 import base64
+import http.client
 import json
 import threading
 import time
@@ -142,6 +143,9 @@ class OpenAICompatClient:
                         if fn.get("name") and not slot["name"]:
                             slot["name"] = fn["name"]
                         slot["args"] += fn.get("arguments") or ""
+        except (OSError, http.client.HTTPException) as e:
+            yield {"type": "error", "error": f"Lost connection to {self.host} mid-reply ({e})"}
+            return
         finally:
             resp.close()
 
