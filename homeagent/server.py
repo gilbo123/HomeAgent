@@ -371,6 +371,7 @@ def make_handler(app: App):
             try:
                 models = provider.client.list_models()
             except Exception as e:  # noqa: BLE001 — server down / not installed
+                self.log_message("%s models unavailable at %s: %s", provider.id, provider.url, e)
                 return self._send_json(200, {**out, "online": False, "models": [],
                                              "default": "", "error": str(e)})
             default = app.cfg.default_model if app.cfg.default_model in models else ""

@@ -287,6 +287,8 @@ async function loadModels(want){
   $("ollamaState").textContent = !d.online ? `${label} offline`
     : models.length ? `${label} online` : `${label} online · no models`;
   $("ollamaHost").textContent = hostLabel(label, d.url);
+  $("ollamaState").title = d.error || "";
+  if (d.error) console.warn(`${label} (${d.url}): ${d.error}`);
   if ($("empty")){ $("empty").remove(); emptyState(); }
   setSend(!busy);
 }
