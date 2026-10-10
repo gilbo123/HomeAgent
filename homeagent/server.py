@@ -33,6 +33,7 @@ import base64
 import json
 import os
 import re
+import socket
 import time
 from http.server import BaseHTTPRequestHandler
 from typing import Any
@@ -60,6 +61,9 @@ def make_handler(app: App):
 
     class Handler(BaseHTTPRequestHandler):
         server_version = f"HomeAgent/{__version__}"
+        # HTTP/1.1 so streams can use chunked transfer: every other response
+        # must therefore carry a Content-Length.
+        protocol_version = "HTTP/1.1"
 
         # ------------------------------------------------------------ utils
 
@@ -82,6 +86,7 @@ def make_handler(app: App):
             # One image plus multipart / JSON overhead.
             if length > (app.cfg.max_image_mb + 1) * 1024 * 1024:
                 raise BodyTooLarge(f"Request too large (max {app.cfg.max_image_mb} MB)")
+            self._body_read = True
             return self.rfile.read(length) if length else b""
 
         def _read_json(self) -> dict[str, Any]:
@@ -147,16 +152,22 @@ def make_handler(app: App):
             no handler error produces an HTML traceback page."""
             path, _, query = self.path.partition("?")
             self._query = {k: v[-1] for k, v in parse_qs(query).items()}
+            self._body_read = False
             try:
                 self._route_inner(method, path)
             except BodyTooLarge as e:
-                self.close_connection = True  # the unread body is still on the socket
                 self._send_error_json(413, str(e))
             except Exception as e:  # noqa: BLE001 — last-resort guard
+                self.close_connection = True
                 try:
                     self._send_error_json(500, str(e))
                 except Exception:  # response already started (e.g. mid-stream)
                     pass
+            finally:
+                # A request body left unread (e.g. a 401 before parsing) would
+                # be misread as the next request on this kept-alive connection.
+                if not self._body_read and int(self.headers.get("Content-Length") or 0):
+                    self.close_connection = True
 
         # --------------------------------------------------------- routing
 
@@ -409,10 +420,21 @@ def make_handler(app: App):
             Returns what was produced (content, thinking, tool calls, elapsed
             ms) so the caller can persist it. Stops early if the client leaves.
             """
+            # Every event must reach the browser as it happens, so: send small
+            # writes immediately (no Nagle), use chunked framing, and ask
+            # proxies (nginx, Cloudflare, …) and content sniffers not to buffer.
+            self.connection.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             self.send_response(200)
-            self.send_header("Content-Type", "application/x-ndjson")
-            self.send_header("Cache-Control", "no-cache")
+            self.send_header("Content-Type", "application/x-ndjson; charset=utf-8")
+            self.send_header("Cache-Control", "no-cache, no-transform")
+            self.send_header("X-Accel-Buffering", "no")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
+
+            def write_chunk(data: bytes) -> None:
+                self.wfile.write(b"%X\r\n%s\r\n" % (len(data), data))
+                self.wfile.flush()
 
             started = time.monotonic()
             content: list[str] = []
@@ -429,10 +451,15 @@ def make_handler(app: App):
                 elif kind == "tool_result" and tools:
                     tools[-1]["ok"] = ev["ok"]
                 try:
-                    self.wfile.write((json.dumps(ev) + "\n").encode("utf-8"))
-                    self.wfile.flush()
+                    write_chunk((json.dumps(ev) + "\n").encode("utf-8"))
                 except (BrokenPipeError, ConnectionResetError):
+                    self.close_connection = True
                     break
+            else:
+                try:
+                    self.wfile.write(b"0\r\n\r\n")  # end of chunked body
+                except (BrokenPipeError, ConnectionResetError):
+                    self.close_connection = True
             return {
                 "content": "".join(content),
                 "thinking": "".join(thinking),

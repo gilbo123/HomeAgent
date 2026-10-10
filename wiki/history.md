@@ -2,6 +2,17 @@
 
 Completed work only — newest first. Active checklist lives in `wiki/current.md`.
 
+### 2026-10-11 — systemd + live thinking on remote devices
+- `run.sh` finds uv outside `PATH` (`~/.local/bin`, `~/.cargo/bin`, …):
+  systemd services start with a minimal PATH, so `uv` "wasn't installed".
+- Streams were HTTP/1.0 close-delimited bodies of tiny writes, which remote
+  browsers / proxies may hold back. Now: HTTP/1.1 chunked transfer,
+  `TCP_NODELAY`, `Cache-Control: no-transform`, `X-Accel-Buffering: no`,
+  `X-Content-Type-Options: nosniff`. Keep-alive is safe: a request whose body
+  wasn't read closes the connection.
+- Verified: thinking renders progressively in the browser (first text at
+  ~1.8 s, growing every 250 ms, answer at ~6 s).
+
 ### 2026-10-05 — Guest sign-in + model providers
 - **Guest tile** on the splash: `POST /auth/guest` → memory-only session in
   `UserStore` (no user doc, restart signs guests out). `_require_user(allow_guest)`

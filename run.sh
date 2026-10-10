@@ -16,12 +16,20 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# systemd and cron start with a minimal PATH that lacks the per-user install
+# locations, so look there too.
+UV="$(command -v uv 2>/dev/null || true)"
+for candidate in "$HOME/.local/bin/uv" "$HOME/.cargo/bin/uv" /usr/local/bin/uv \
+                 /opt/homebrew/bin/uv /snap/bin/uv; do
+    [[ -z "$UV" && -x "$candidate" ]] && UV="$candidate"
+done
+
 if [[ -n "${PY:-}" ]]; then
     RUN=("$PY")
-elif command -v uv >/dev/null 2>&1; then
-    RUN=(uv run --quiet python)
+elif [[ -n "$UV" ]]; then
+    RUN=("$UV" run --quiet python)
 else
-    echo "error: uv not found — install it (brew install uv) or set PY=..." >&2
+    echo "error: uv not found (PATH=$PATH) — install it (https://docs.astral.sh/uv/) or set PY=..." >&2
     exit 1
 fi
 
